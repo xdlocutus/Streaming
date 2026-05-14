@@ -254,7 +254,8 @@ async function fetchAddonStreams(addon, type, id) {
 
 function normalizeStream(stream, addon) {
   const title = stream.title || stream.name || stream.description || 'Untitled stream';
-  const url = stream.url || stream.externalUrl || stream.infoHash || '';
+  const url = stream.url || '';
+  const externalUrl = stream.externalUrl || '';
   const isTorrent = Boolean(stream.infoHash) || url.startsWith('magnet:');
   const magnet = stream.infoHash
     ? `magnet:?xt=urn:btih:${stream.infoHash}${stream.fileIdx ? `&so=${stream.fileIdx}` : ''}`
@@ -265,6 +266,7 @@ function normalizeStream(stream, addon) {
     addonName: addon.name,
     quality: stream.behaviorHints?.videoSize || stream.name || stream.tag || '',
     url,
+    externalUrl,
     magnet,
     isTorrent,
   };
@@ -326,8 +328,9 @@ function renderEpisodePicker(seasons, selectedVideoId) {
   `;
 }
 
-function renderStream(stream, index) {
+function renderStream(stream) {
   const canPlayInBrowser = stream.url && !stream.isTorrent;
+
   return `
     <article class="stream-item">
       <div>
@@ -336,6 +339,7 @@ function renderStream(stream, index) {
       </div>
       <div class="stream-actions">
         ${canPlayInBrowser ? `<button type="button" data-play-url="${escapeAttribute(stream.url)}">Play</button>` : ''}
+        ${isHttpUrl(stream.externalUrl) ? `<a class="secondary button-link" href="${escapeAttribute(stream.externalUrl)}" target="_blank" rel="noreferrer">Open</a>` : ''}
         ${stream.magnet ? `<button class="secondary" type="button" data-copy-stream="${escapeAttribute(stream.magnet)}">Copy ${stream.isTorrent ? 'magnet' : 'link'}</button>` : ''}
       </div>
     </article>
@@ -426,17 +430,195 @@ async function copyStreamLink(value, button) {
 }
 
 function playInModal(url) {
+  destroyActivePlayer();
+
   const player = document.createElement('div');
   player.className = 'player-dock';
   player.innerHTML = `
-    <video src="${escapeAttribute(url)}" controls autoplay playsinline></video>
-    <button type="button" aria-label="Close player">×</button>
+    <div class="player-header">
+      <div>
+        <p class="eyebrow">Now playing</p>
+        <p class="player-status" role="status">Starting stream…</p>
+      </div>
+      <button type="button" data-close-player aria-label="Close player">×</button>
+    </div>
+    <video controls autoplay playsinline></video>
+    <div class="player-actions">
+      ${isHttpUrl(url) ? `<a class="secondary button-link" href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">Open stream</a>` : ''}
+      <button class="secondary" type="button" data-copy-stream="${escapeAttribute(url)}">Copy link</button>
+    </div>
   `;
-  player.querySelector('button').addEventListener('click', () => player.remove());
+
+  const video = player.querySelector('video');
+  const status = player.querySelector('.player-status');
+  const closeButton = player.querySelector('[data-close-player]');
+
+  closeButton.addEventListener('click', () => {
+    destroyActivePlayer();
+  });
+  video.addEventListener('playing', () => {
+    setPlayerStatus(status, 'Stream is playing.');
+  });
+  video.addEventListener('error', () => {
+    setPlayerError(status, 'The embedded browser player could not decode this stream. Use Open stream or Copy link to try it in a desktop player, or use a transcoding proxy for this file type.');
+  });
+
   elements.modalContent.prepend(player);
+  configurePlayerSource({ player, video, status, url }).catch(() => {
+    setPlayerError(status, 'The embedded browser player could not load this stream. Use Open stream or Copy link to try another player.');
+  });
+  player.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function configurePlayerSource({ player, video, status, url }) {
+  const playbackUrl = buildMediaUrl(url);
+  const format = detectStreamFormat(url);
+  setPlayerStatus(status, `Starting ${getFormatLabel(format)} stream…`);
+
+  if (format === 'hls' || format === 'dash') {
+    const loadedWithShaka = await loadWithShaka({ player, video, status, url: playbackUrl });
+    if (loadedWithShaka) return;
+
+    if (format === 'hls' && video.canPlayType('application/vnd.apple.mpegurl')) {
+      await loadNativeVideo({ video, status, url: playbackUrl });
+      return;
+    }
+
+    setPlayerError(status, 'Adaptive playback is not available in this browser. Use Open stream or Copy link to try another player.');
+    return;
+  }
+
+  if (format === 'flv' || format === 'mpegts' || format === 'm2ts') {
+    const loadedWithMpegts = await loadWithMpegts({ player, video, status, url: playbackUrl, format });
+    if (loadedWithMpegts) return;
+  }
+
+  await loadNativeVideo({ video, status, url: playbackUrl });
+}
+
+async function loadWithShaka({ player, video, status, url }) {
+  if (!window.shaka?.Player) return false;
+
+  window.shaka.polyfill.installAll();
+  if (!window.shaka.Player.isBrowserSupported()) return false;
+
+  const shakaPlayer = new window.shaka.Player();
+  player.shaka = shakaPlayer;
+  shakaPlayer.addEventListener('error', () => {
+    setPlayerError(status, 'The adaptive stream failed to load. Use Open stream or Copy link to try another player.');
+  });
+
+  try {
+    await shakaPlayer.attach(video);
+    await shakaPlayer.load(url);
+    await startPlayback(video, status);
+    return true;
+  } catch (error) {
+    await shakaPlayer.destroy();
+    player.shaka = null;
+    return false;
+  }
+}
+
+async function loadWithMpegts({ player, video, status, url, format }) {
+  if (!window.mpegts?.isSupported()) return false;
+
+  try {
+    const mpegtsPlayer = window.mpegts.createPlayer({
+      type: getMpegtsType(format),
+      url,
+      isLive: false,
+    });
+    player.mpegts = mpegtsPlayer;
+    mpegtsPlayer.on(window.mpegts.Events.ERROR, () => {
+      setPlayerError(status, 'The MPEG transport stream failed to load. Use Open stream or Copy link to try another player.');
+    });
+    mpegtsPlayer.attachMediaElement(video);
+    mpegtsPlayer.load();
+    await startPlayback(video, status);
+    return true;
+  } catch (error) {
+    player.mpegts?.destroy();
+    player.mpegts = null;
+    return false;
+  }
+}
+
+async function loadNativeVideo({ video, status, url }) {
+  video.src = url;
+  video.load();
+  await startPlayback(video, status);
+}
+
+async function startPlayback(video, status) {
+  try {
+    await video.play();
+  } catch (error) {
+    setPlayerStatus(status, 'Click the video play control to start this stream.');
+  }
+}
+
+function detectStreamFormat(url) {
+  const path = getUrlPath(url);
+  if (path.endsWith('.m3u8')) return 'hls';
+  if (path.endsWith('.mpd')) return 'dash';
+  if (path.endsWith('.flv')) return 'flv';
+  if (path.endsWith('.m2ts') || path.endsWith('.m2t') || path.endsWith('.mts')) return 'm2ts';
+  if (path.endsWith('.ts')) return 'mpegts';
+  return 'native';
+}
+
+function getUrlPath(url) {
+  try {
+    return new URL(url, window.location.href).pathname.toLowerCase();
+  } catch (error) {
+    return url.split('?')[0].toLowerCase();
+  }
+}
+
+function getFormatLabel(format) {
+  const labels = {
+    dash: 'DASH',
+    flv: 'FLV',
+    hls: 'HLS',
+    m2ts: 'M2TS',
+    mpegts: 'MPEG-TS',
+    native: 'direct video',
+  };
+  return labels[format] || 'video';
+}
+
+function getMpegtsType(format) {
+  return format === 'm2ts' ? 'm2ts' : format;
+}
+
+function setPlayerStatus(status, message) {
+  status.textContent = message;
+  status.classList.remove('error');
+}
+
+function setPlayerError(status, message) {
+  status.textContent = message;
+  status.classList.add('error');
+}
+
+function isHttpUrl(url) {
+  return /^https?:\/\//i.test(url);
+}
+
+function buildMediaUrl(url) {
+  return state.proxy ? `${state.proxy}${encodeURIComponent(url)}` : url;
+}
+
+function destroyActivePlayer() {
+  const player = elements.modalContent.querySelector('.player-dock');
+  player?.shaka?.destroy();
+  player?.mpegts?.destroy();
+  player?.remove();
 }
 
 function closeModal() {
+  destroyActivePlayer();
   elements.modal.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('modal-open');
   state.activeTitle = null;
