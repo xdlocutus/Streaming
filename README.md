@@ -13,6 +13,20 @@ AstraStream is a PHP, HTML, CSS, and vanilla JavaScript rebuild of the original 
 - PHP service layer for cached TMDB and Trakt API access, daily sync jobs, Trakt OAuth start/callback flow, stream URL validation, normalized matching, and fuzzy fallback scoring.
 - Reference Prisma schema covering users, profiles, watch history, watchlists, favorites, providers, cached streams, playback progress, ratings, reviews, and notifications.
 
+
+## Stremio stream aggregation
+
+AstraStream includes a Stremio-compatible stream aggregation layer. Admins can add Stremio addon manifest URLs from the Admin page; the backend parses each manifest's catalogs, resources, and types, stores provider priority/enabled state, tests manifest health, and queries enabled `stream/{type}/{id}.json` endpoints. Stream lookups accept IMDb IDs (`tt...`), TMDB IDs (`tmdb:...`), and Trakt IDs (`trakt:...`) only, then merge duplicate torrent, debrid, direct HTTP, and external-player entries while exposing quality, size, seeds, and source metadata.
+
+Useful provider endpoints:
+
+- `app/api.php?action=providers`
+- `app/api.php?action=provider-add` with JSON `manifest_url`, `priority`, and `enabled`
+- `app/api.php?action=provider-test&id=...`
+- `app/api.php?action=streams&type=movie&id=tt0133093`
+
+The home catalog does not use generated placeholder movies or shows. Rows remain empty until TMDB or Trakt credentials return real metadata.
+
 ## Runtime stack
 
 This project intentionally avoids a Node runtime. Use PHP's built-in server for local development:

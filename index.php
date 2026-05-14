@@ -64,10 +64,10 @@ $tmdbLanguage = $_GET['lang'] ?? 'en-US';
       <?php elseif ($page === 'admin'): ?>
         <section class="dashboard-grid admin-dashboard">
           <div class="section-title"><p class="eyebrow">Admin Control Room</p><h1>Operations dashboard</h1><p>Manage providers, users, cache, jobs, featured titles, and streaming health from one dark glass console.</p></div>
-          <div class="metric-card"><span>Providers</span><strong data-metric="providers">8</strong><small>5 healthy · 3 sandboxed</small></div>
+          <div class="metric-card"><span>Providers</span><strong data-metric="providers">0</strong><small>Stremio addons · priority ordered</small></div>
           <div class="metric-card"><span>Cache hit rate</span><strong data-metric="cache">93%</strong><small>Redis + edge stale-while-revalidate</small></div>
           <div class="metric-card"><span>Scheduled jobs</span><strong data-metric="jobs">14</strong><small>TMDB daily sync due 02:00 UTC</small></div>
-          <div class="panel"><h2>Provider management</h2><div class="admin-list" data-provider-list></div></div>
+          <div class="panel wide provider-manager"><h2>Stremio provider manager</h2><p class="panel-note">Add Stremio manifest URLs to parse catalogs, stream resources, and supported types. Providers stay empty until an admin adds an addon.</p><form class="provider-form" data-provider-form><input type="url" name="manifest_url" placeholder="https://addon.example.com/manifest.json" required /><input type="number" name="priority" value="100" min="1" step="1" aria-label="Provider priority" /><button class="button primary" type="submit">Add addon</button></form><div class="admin-list provider-list" data-provider-list></div></div>
           <div class="panel"><h2>API health monitoring</h2><div class="health-grid" data-health-grid></div></div>
           <div class="panel wide"><h2>Featured content management</h2><form class="feature-form"><input placeholder="TMDB or IMDb ID" /><button class="button primary" type="button">Pin to hero</button></form><div class="job-log" data-job-log></div></div>
         </section>
@@ -84,7 +84,7 @@ $tmdbLanguage = $_GET['lang'] ?? 'en-US';
               <button class="button ghost" type="button" data-add-favorite>Favorite</button>
               <button class="button ghost" type="button" data-rate-title>Rate</button>
             </div>
-            <section class="panel"><h2>Cast, seasons, recommendations, and similar titles</h2><div class="mini-grid" data-detail-grid></div></section>
+            <section class="panel"><h2>Cast, seasons, recommendations, and similar titles</h2><div class="mini-grid" data-detail-grid></div></section><section class="panel stream-panel"><div class="stream-heading"><div><p class="eyebrow">Stream System</p><h2>Aggregated Stremio streams</h2></div><button class="button ghost" type="button" data-refresh-streams>Refresh streams</button></div><p class="panel-note">Streams are queried from enabled Stremio addons using IMDb, TMDB, or Trakt IDs only.</p><div class="stream-list" data-stream-list></div></section>
           </article>
         </section>
       <?php endif; ?>

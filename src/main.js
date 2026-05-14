@@ -1,36 +1,15 @@
 const STORAGE = {
-  profiles: 'astra:profiles',
   watchlist: 'astra:watchlist',
   favorites: 'astra:favorites',
   progress: 'astra:progress',
-  cache: 'astra:cache',
   language: 'astra:language',
 };
 
-const posterSeeds = [
-  ['Midnight Signal', 'movie', '2026', '8.9', 'Sci-Fi Thriller', 'photo-1440404653325-ab127d49abc1'],
-  ['Crimson Harbor', 'tv', '2025', '8.6', 'Crime Drama', 'photo-1500530855697-b586d89ba3ee'],
-  ['Last Train to Europa', 'movie', '2026', '9.1', 'Adventure', 'photo-1500534314209-a25ddb2bd429'],
-  ['Neon Ronin', 'anime', '2024', '8.8', 'Anime Action', 'photo-1518709268805-4e9042af2176'],
-  ['The Glass Republic', 'tv', '2026', '8.3', 'Political Drama', 'photo-1485846234645-a62644f84728'],
-  ['Afterimage', 'movie', '2025', '8.0', 'Mystery', 'photo-1519608487953-e999c86e7455'],
-  ['Northern Lights Club', 'tv', '2026', '7.9', 'Comedy', 'photo-1493246507139-91e8fad9978e'],
-  ['Orbit Garden', 'movie', '2024', '8.5', 'Family Fantasy', 'photo-1500534314209-a25ddb2bd429'],
-  ['Shogun Starfall', 'anime', '2026', '9.0', 'Anime Epic', 'photo-1495567720989-cebdbdd97913'],
-  ['Black Tide Archive', 'tv', '2025', '8.4', 'Documentary', 'photo-1500530855697-b586d89ba3ee'],
-];
-
 const railDefinitions = [
-  ['Trending Movies', 'TMDB trending/movie + Trakt trending movies'],
-  ['Trending TV Shows', 'TMDB trending/tv + Trakt trending shows'],
-  ['Popular on Trakt', 'Weighted by plays, watchers, and comments'],
-  ['Top Rated', 'TMDB vote average with minimum vote thresholds'],
-  ['Recently Released', 'Release dates from TMDB discover endpoints'],
-  ['Continue Watching', 'Synced from Trakt history and local resume data'],
-  ['Latest Added', 'Provider ingestion queue sorted by cache time'],
-  ['Action Genre', 'Genre row with virtualized infinite scrolling'],
-  ['Drama Genre', 'Genre row with localized metadata'],
-  ['Anime Section', 'Anime keyword + genre collection'],
+  ['Trending Movies', 'tmdb-trending', { type: 'movie' }],
+  ['Trending TV Shows', 'tmdb-trending', { type: 'tv' }],
+  ['Popular on Trakt Movies', 'trakt-trending', { type: 'movies' }],
+  ['Popular on Trakt Shows', 'trakt-trending', { type: 'shows' }],
 ];
 
 const state = {
@@ -40,6 +19,8 @@ const state = {
   watchlist: readJson(STORAGE.watchlist, []),
   favorites: readJson(STORAGE.favorites, []),
   progress: readJson(STORAGE.progress, {}),
+  currentTitle: null,
+  currentStreams: [],
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -53,27 +34,54 @@ function writeJson(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-function img(seed, width = 780, height = 1170) {
-  return `https://images.unsplash.com/${seed}?auto=format&fit=crop&w=${width}&h=${height}&q=80`;
+async function api(action, params = {}, options = {}) {
+  const method = options.method || 'GET';
+  if (method === 'GET') {
+    const query = new URLSearchParams({ action, ...params });
+    return fetch(`app/api.php?${query}`).then(response => response.json());
+  }
+  return fetch('app/api.php', {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ...params }),
+  }).then(response => response.json());
 }
 
-function backdrop(seed) {
-  return `https://images.unsplash.com/${seed}?auto=format&fit=crop&w=1800&h=900&q=82`;
+function imageUrl(path, size = 'w500') {
+  return path ? `https://image.tmdb.org/t/p/${size}${path}` : '';
 }
 
-function buildTitle(index, railName = '') {
-  const seed = posterSeeds[index % posterSeeds.length];
-  const suffix = index >= posterSeeds.length ? ` ${Math.floor(index / posterSeeds.length) + 1}` : '';
+function mapTmdbTitle(item, fallbackType = 'movie') {
+  const mediaType = item.media_type || fallbackType;
   return {
-    id: `${seed[1]}-${seed[0].toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${index}`,
-    title: `${seed[0]}${suffix}`,
-    type: seed[1],
-    year: seed[2],
-    rating: seed[3],
-    genre: railName.includes('Genre') ? railName.replace(' Genre', '') : seed[4],
-    poster: img(seed[5]),
-    backdrop: backdrop(seed[5]),
-    trailer: 'jfKfPfyJRdk',
+    id: item.id ? `tmdb:${item.id}` : '',
+    tmdbId: item.id,
+    title: item.title || item.name || 'Untitled',
+    type: mediaType === 'tv' ? 'tv' : 'movie',
+    stremioType: mediaType === 'tv' ? 'series' : 'movie',
+    year: (item.release_date || item.first_air_date || '').slice(0, 4) || 'Unreleased',
+    rating: item.vote_average ? item.vote_average.toFixed(1) : 'NR',
+    genre: 'TMDB',
+    poster: imageUrl(item.poster_path),
+    backdrop: imageUrl(item.backdrop_path, 'original'),
+  };
+}
+
+function mapTraktTitle(item, fallbackType = 'movie') {
+  const record = item.movie || item.show || item;
+  const ids = record.ids || {};
+  const id = ids.imdb ? ids.imdb : (ids.tmdb ? `tmdb:${ids.tmdb}` : (ids.trakt ? `trakt:${ids.trakt}` : ''));
+  return {
+    id,
+    tmdbId: ids.tmdb,
+    title: record.title || 'Untitled',
+    type: item.show ? 'tv' : fallbackType,
+    stremioType: item.show ? 'series' : 'movie',
+    year: record.year || 'Unknown',
+    rating: item.watchers ? `${item.watchers} watchers` : 'Trakt',
+    genre: 'Trakt',
+    poster: '',
+    backdrop: '',
   };
 }
 
@@ -89,83 +97,90 @@ function registerServiceWorker() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => undefined);
 }
 
-function initHome() {
-  hydrateHero(buildTitle(0));
-  renderNextRails(6);
+async function initHome() {
+  await renderNextRails(2);
   const sentinel = $('[data-infinite-sentinel]');
   if (!sentinel) return;
   const observer = new IntersectionObserver(entries => {
-    if (entries.some(entry => entry.isIntersecting)) renderNextRails(2);
+    if (entries.some(entry => entry.isIntersecting)) renderNextRails(1);
   }, { rootMargin: '600px' });
   observer.observe(sentinel);
 }
 
 function hydrateHero(title) {
   const hero = $('[data-hero]');
-  if (!hero) return;
-  hero.style.backgroundImage = `linear-gradient(90deg, rgba(5,6,13,.95), rgba(5,6,13,.52)), url(${title.backdrop})`;
+  if (!hero || !title) return;
+  if (title.backdrop) hero.style.backgroundImage = `linear-gradient(90deg, rgba(5,6,13,.95), rgba(5,6,13,.52)), url(${title.backdrop})`;
   $('[data-hero-title]').textContent = title.title;
-  $('[data-hero-overview]').textContent = 'A premium, original interface concept powered by TMDB metadata, Trakt personalization, secured provider matching, and a modern adaptive player.';
-  $('[data-hero-meta]').innerHTML = `<span>${title.rating} TMDB</span><span>${title.genre}</span><span>${title.year}</span><span>${state.language}</span>`;
-  const trailer = $('[data-youtube-hero]');
-  trailer.innerHTML = `<iframe title="Muted trailer" src="https://www.youtube-nocookie.com/embed/${title.trailer}?autoplay=1&mute=1&controls=0&loop=1&playlist=${title.trailer}&playsinline=1" allow="autoplay; encrypted-media; picture-in-picture" loading="lazy"></iframe>`;
+  $('[data-hero-overview]').textContent = 'Metadata is loaded from TMDB and Trakt only; streams are aggregated from admin-enabled Stremio addons.';
+  $('[data-hero-meta]').innerHTML = `<span>${title.rating} TMDB</span><span>${title.year}</span><span>${state.language}</span><span>${title.id}</span>`;
+  const action = $('.hero-actions .primary');
+  if (action) action.href = `?page=${title.type}&id=${encodeURIComponent(title.id)}&tmdb=${encodeURIComponent(title.tmdbId || '')}&title=${encodeURIComponent(title.title)}`;
+  $('[data-youtube-hero]').innerHTML = '';
 }
 
-function renderNextRails(count) {
+async function renderNextRails(count) {
   const mount = $('[data-rails]');
   if (!mount) return;
   const railTemplate = $('#rail-template');
   const posterTemplate = $('#poster-template');
   for (let i = 0; i < count && state.railsRendered < railDefinitions.length; i += 1) {
-    const [name, source] = railDefinitions[state.railsRendered];
+    const [name, action, params] = railDefinitions[state.railsRendered];
+    const data = await api(action, { ...params, language: state.language });
+    const titles = normalizeRailResults(data, action, params.type);
     const rail = railTemplate.content.firstElementChild.cloneNode(true);
-    $('.eyebrow', rail).textContent = source;
+    $('.eyebrow', rail).textContent = titles.length ? `${params.type.toUpperCase()} · live metadata` : 'No placeholder data';
     $('h2', rail).textContent = name;
     const row = $('.poster-row', rail);
-    Array.from({ length: 16 }, (_, cardIndex) => buildTitle(cardIndex + state.railsRendered * 3, name)).forEach(title => {
-      const card = posterTemplate.content.firstElementChild.cloneNode(true);
-      const link = $('a', card);
-      link.href = `?page=${title.type === 'tv' ? 'tv' : 'movie'}&id=${encodeURIComponent(title.id)}`;
-      $('img', card).src = title.poster;
-      $('img', card).alt = `${title.title} poster`;
-      $('strong', card).textContent = title.title;
-      $('small', card).textContent = `${title.year} · ${title.rating} · ${title.genre}`;
-      row.append(card);
-    });
+    if (!titles.length) {
+      row.innerHTML = '<p class="empty-state">Connect TMDB or Trakt credentials to populate this row with real metadata.</p>';
+    } else {
+      if (!state.currentTitle) hydrateHero(titles[0]);
+      titles.forEach(title => {
+        const card = posterTemplate.content.firstElementChild.cloneNode(true);
+        const link = $('a', card);
+        link.href = `?page=${title.type}&id=${encodeURIComponent(title.id)}&tmdb=${encodeURIComponent(title.tmdbId || '')}&title=${encodeURIComponent(title.title)}`;
+        const img = $('img', card);
+        if (title.poster) img.src = title.poster; else img.remove();
+        $('strong', card).textContent = title.title;
+        $('small', card).textContent = `${title.year} · ${title.rating} · ${title.genre}`;
+        row.append(card);
+      });
+    }
     mount.append(rail);
     state.railsRendered += 1;
   }
+}
+
+function normalizeRailResults(data, action, type) {
+  if (action === 'tmdb-trending') return (data.results || []).filter(item => item.id).map(item => mapTmdbTitle(item, type)).filter(item => item.id);
+  if (action === 'trakt-trending') return Array.isArray(data) ? data.map(item => mapTraktTitle(item, type === 'shows' ? 'tv' : 'movie')).filter(item => item.id) : [];
+  return [];
 }
 
 function bindSearch() {
   const input = $('[data-search-input]');
   const suggestions = $('[data-search-suggestions]');
   if (!input || !suggestions) return;
-  let timer;
   input.addEventListener('input', () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      const query = input.value.trim().toLowerCase();
-      if (query.length < 2) { suggestions.innerHTML = ''; return; }
-      const results = posterSeeds
-        .map((_, index) => buildTitle(index))
-        .filter(item => `${item.title} ${item.genre} ${item.type}`.toLowerCase().includes(query))
-        .slice(0, 6);
-      suggestions.innerHTML = results.map(result => `<a href="?page=search&q=${encodeURIComponent(query)}"><img src="${result.poster}" alt=""><span><strong>${result.title}</strong><small>${result.type} · ${result.genre}</small></span></a>`).join('') || '<p>No local suggestions yet; TMDB multi-search will fill this.</p>';
-    }, 180);
+    const query = input.value.trim();
+    suggestions.innerHTML = query.length < 2 ? '' : '<p>Search connects to TMDB/Trakt metadata only; no local filler catalog is shown.</p>';
   });
 }
 
 function bindGlobalActions() {
   document.addEventListener('click', event => {
     const watchButton = event.target.closest('[data-add-watchlist]');
-    if (watchButton) toggleList(STORAGE.watchlist, state.watchlist, watchButton.dataset.addWatchlist || 'demo');
+    if (watchButton) toggleList(STORAGE.watchlist, state.watchlist, watchButton.dataset.addWatchlist || currentContentId());
     if (event.target.closest('[data-open-player]')) openPlayer();
     if (event.target.closest('[data-close-player]')) closePlayer();
     if (event.target.closest('[data-pip]')) requestPip();
     if (event.target.closest('[data-skip-intro]')) skipIntro();
     if (event.target.closest('[data-trakt-login]')) startTraktOAuth();
-    if (event.target.closest('[data-add-favorite]')) toggleList(STORAGE.favorites, state.favorites, location.search || 'detail');
+    if (event.target.closest('[data-add-favorite]')) toggleList(STORAGE.favorites, state.favorites, currentContentId());
+    if (event.target.closest('[data-refresh-streams]')) loadStreams();
+    const external = event.target.closest('[data-external-stream]');
+    if (external) window.open(external.dataset.externalStream, '_blank', 'noopener');
   });
   const speed = $('[data-speed]');
   speed?.addEventListener('change', () => { const video = $('[data-video]'); if (video) video.playbackRate = parseFloat(speed.value); });
@@ -178,37 +193,73 @@ function toggleList(key, list, id) {
   toast(list.includes(id) ? 'Removed from list' : 'Saved to your profile');
 }
 
+function currentContentId() {
+  const params = new URLSearchParams(location.search);
+  return params.get('id') || (params.get('tmdb') ? `tmdb:${params.get('tmdb')}` : '');
+}
+
 function initDetailPage() {
   const detail = $('[data-detail-page]');
   if (!detail) return;
-  const title = buildTitle(new URLSearchParams(location.search).get('id')?.length || 2);
-  document.body.style.backgroundImage = `linear-gradient(rgba(5,6,13,.75), rgba(5,6,13,.98)), url(${title.backdrop})`;
-  $('[data-detail-title]').textContent = title.title;
-  $('[data-detail-overview]').textContent = 'This page models TMDB cast, ratings, genres, trailers, recommendations, similar titles, episode and season metadata while Trakt handles watch history, watchlists, progress sync, and personalized recommendations.';
-  $('[data-detail-poster]').src = title.poster;
-  $('[data-detail-poster]').alt = `${title.title} poster`;
-  $('[data-detail-meta]').innerHTML = `<span>${title.year}</span><span>${title.rating} rating</span><span>${title.genre}</span><span>IMDb/TMDB matched</span>`;
-  $('[data-detail-grid]').innerHTML = ['Cast', 'Season metadata', 'Episode guide', 'Similar titles', 'Recommendations', 'Reviews'].map(label => `<article><strong>${label}</strong><small>Loaded from cached TMDB/Trakt API responses.</small></article>`).join('');
+  const params = new URLSearchParams(location.search);
+  const id = currentContentId();
+  const title = params.get('title') || id || 'Select a TMDB, IMDb, or Trakt title';
+  state.currentTitle = { id, title, stremioType: state.page === 'tv' || state.page === 'episode' ? 'series' : 'movie' };
+  $('[data-detail-title]').textContent = title;
+  $('[data-detail-overview]').textContent = 'This detail page avoids seeded or empty catalog data. Add TMDB/IMDb/Trakt identifiers to query enabled Stremio stream providers.';
+  $('[data-detail-meta]').innerHTML = `<span>${id || 'No stream ID'}</span><span>IMDb/TMDB/Trakt only</span><span>Stremio compatible</span>`;
+  $('[data-detail-grid]').innerHTML = ['TMDB metadata', 'IMDb identifiers', 'Trakt personalization'].map(label => `<article><strong>${label}</strong><small>Loaded only when configured API credentials or IDs are available.</small></article>`).join('');
+  loadStreams();
+}
+
+async function loadStreams() {
+  const list = $('[data-stream-list]');
+  if (!list) return;
+  const id = currentContentId();
+  if (!id) {
+    list.innerHTML = '<p class="empty-state">No IMDb, TMDB, or Trakt ID is available for this title.</p>';
+    return;
+  }
+  list.innerHTML = '<p class="empty-state">Querying enabled Stremio addons...</p>';
+  const data = await api('streams', { type: state.currentTitle?.stremioType || 'movie', id });
+  state.currentStreams = data.streams || [];
+  renderStreams();
+}
+
+function renderStreams() {
+  const list = $('[data-stream-list]');
+  if (!list) return;
+  if (!state.currentStreams.length) {
+    list.innerHTML = '<p class="empty-state">No streams returned by enabled addons. Add providers in the admin panel or verify provider health.</p>';
+    return;
+  }
+  list.innerHTML = state.currentStreams.map(stream => `
+    <article class="stream-card">
+      <div><strong>${escapeHtml(stream.name || stream.provider)}</strong><small>${escapeHtml(stream.provider)} · ${escapeHtml(stream.source)} · ${stream.debrid ? 'Debrid cached' : escapeHtml(stream.type)}</small></div>
+      <span>${escapeHtml(stream.quality)}</span><span>${escapeHtml(stream.size || 'Size n/a')}</span><span>${stream.seeds ?? 'Seeds n/a'}</span>
+      ${stream.url ? '<button class="button primary" type="button" data-open-player>Play</button>' : ''}
+      ${stream.external_url ? `<button class="button ghost" type="button" data-external-stream="${escapeHtml(stream.external_url)}">External</button>` : ''}
+      ${stream.magnet_url ? `<button class="button ghost" type="button" data-external-stream="${escapeHtml(stream.magnet_url)}">Magnet</button>` : ''}
+    </article>`).join('');
 }
 
 function openPlayer() {
   const player = $('[data-player]');
   const video = $('[data-video]');
   player?.setAttribute('aria-hidden', 'false');
-  $('[data-episode-sidebar]').innerHTML = Array.from({ length: 8 }, (_, i) => `<button type="button">S1:E${i + 1}<small>${i === 0 ? 'Resume 21:04' : 'Queued'}</small></button>`).join('');
-  if (!video) return;
-  video.poster = img('photo-1485846234645-a62644f84728', 1280, 720);
-  if (window.Hls?.isSupported()) {
+  $('[data-episode-sidebar]').innerHTML = state.currentStreams.map(stream => `<button type="button"><span>${escapeHtml(stream.quality)}</span><small>${escapeHtml(stream.provider)} · ${stream.seeds ?? 'n/a'} seeds</small></button>`).join('') || '<p class="empty-state">No stream selected.</p>';
+  const stream = state.currentStreams.find(item => item.url) || null;
+  if (!video || !stream?.url) return;
+  video.poster = '';
+  if (stream.url.includes('.m3u8') && window.Hls?.isSupported()) {
     const hls = new window.Hls({ enableWorker: true, lowLatencyMode: true });
-    hls.loadSource('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8');
+    hls.loadSource(stream.url);
     hls.attachMedia(video);
+  } else if (stream.url.includes('.mpd') && window.dashjs) {
+    window.dashjs.MediaPlayer().create().initialize(video, stream.url, false);
   } else {
-    video.src = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+    video.src = stream.url;
   }
-  video.addEventListener('timeupdate', () => {
-    state.progress.demo = { seconds: Math.floor(video.currentTime), duration: Math.floor(video.duration || 0), at: Date.now() };
-    writeJson(STORAGE.progress, state.progress);
-  });
 }
 
 function closePlayer() { $('[data-player]')?.setAttribute('aria-hidden', 'true'); }
@@ -216,10 +267,61 @@ function requestPip() { const video = $('[data-video]'); if (document.pictureInP
 function skipIntro() { const video = $('[data-video]'); if (video) video.currentTime = Math.max(video.currentTime, 85); }
 function startTraktOAuth() { location.href = 'app/trakt-oauth.php?action=start'; }
 
-function initAdmin() {
-  $('[data-provider-list]') && ($('[data-provider-list]').innerHTML = ['HLS CDN', 'DASH Packager', 'Subtitle Index', 'Metadata Proxy'].map((name, i) => `<article><strong>${name}</strong><span>${i === 2 ? 'Degraded' : 'Healthy'}</span><button>Sandbox</button></article>`).join(''));
-  $('[data-health-grid]') && ($('[data-health-grid]').innerHTML = ['TMDB', 'Trakt', 'Redis', 'Workers', 'Provider cache', 'JWT auth'].map(item => `<div><strong>${item}</strong><span class="pulse">Operational</span></div>`).join(''));
-  $('[data-job-log]') && ($('[data-job-log]').innerHTML = ['Daily TMDB sync', 'Trakt trending import', 'Stream cache pruning', 'Analytics rollup'].map(job => `<p><span>✓</span>${job} completed in background worker.</p>`).join(''));
+async function initAdmin() {
+  await renderProviders();
+  $('[data-provider-form]')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const result = await api('provider-add', { manifest_url: form.get('manifest_url'), priority: form.get('priority') }, { method: 'POST' });
+    toast(result.error ? 'Provider manifest could not be loaded' : 'Provider added');
+    await renderProviders();
+  });
+  $('[data-health-grid]') && ($('[data-health-grid]').innerHTML = ['TMDB', 'IMDb IDs', 'Trakt', 'Stremio manifests', 'Stream cache', 'Provider health'].map(item => `<div><strong>${item}</strong><span class="pulse">Configured check</span></div>`).join(''));
+  $('[data-job-log]') && ($('[data-job-log]').innerHTML = ['TMDB daily sync', 'Trakt trending import', 'Stremio provider health check', 'Stream duplicate merge'].map(job => `<p><span>✓</span>${job} ready.</p>`).join(''));
+}
+
+async function renderProviders() {
+  const mount = $('[data-provider-list]');
+  if (!mount) return;
+  const data = await api('providers');
+  const providers = data.providers || [];
+  $('[data-metric="providers"]') && ($('[data-metric="providers"]').textContent = providers.length);
+  if (!providers.length) {
+    mount.innerHTML = '<p class="empty-state">No addons configured. Add a Stremio manifest URL to begin stream aggregation.</p>';
+    return;
+  }
+  mount.innerHTML = providers.map(provider => `
+    <article data-provider-id="${escapeHtml(provider.id)}">
+      <div><strong>${escapeHtml(provider.name)}</strong><small>${escapeHtml(provider.manifest_url)} · ${(provider.resources || []).join(', ')} · ${(provider.types || []).join(', ')}</small></div>
+      <input type="number" value="${provider.priority}" min="1" data-provider-priority aria-label="Priority for ${escapeHtml(provider.name)}" />
+      <button type="button" data-provider-toggle>${provider.enabled ? 'Disable' : 'Enable'}</button>
+      <button type="button" data-provider-test>Test</button>
+      <button type="button" data-provider-remove>Remove</button>
+    </article>`).join('');
+  mount.onclick = handleProviderClick;
+  mount.onchange = handleProviderPriority;
+}
+
+async function handleProviderClick(event) {
+  const row = event.target.closest('[data-provider-id]');
+  if (!row) return;
+  const id = row.dataset.providerId;
+  if (event.target.closest('[data-provider-toggle]')) await api('provider-enable', { id, enabled: event.target.textContent === 'Enable' }, { method: 'POST' });
+  if (event.target.closest('[data-provider-test]')) toast((await api('provider-test', { id }, { method: 'POST' })).ok ? 'Provider healthy' : 'Provider failed health check');
+  if (event.target.closest('[data-provider-remove]')) await api('provider-remove', { id }, { method: 'POST' });
+  await renderProviders();
+}
+
+async function handleProviderPriority(event) {
+  const input = event.target.closest('[data-provider-priority]');
+  const row = event.target.closest('[data-provider-id]');
+  if (!input || !row) return;
+  await api('provider-priority', { id: row.dataset.providerId, priority: input.value }, { method: 'POST' });
+  toast('Provider priority updated');
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
 }
 
 function toast(message) {

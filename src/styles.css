@@ -126,3 +126,18 @@ h2 { margin: 0; font-size: clamp(1.4rem, 2.5vw, 2.35rem); letter-spacing: -.04em
   .hero-actions, .detail-actions, .feature-form { flex-direction: column; align-items: stretch; }
   .poster-row { grid-auto-columns: 42vw; }
 }
+.panel-note, .empty-state { color: var(--muted); line-height: 1.6; }
+.provider-form { display: grid; grid-template-columns: minmax(14rem, 1fr) 7rem auto; gap: .7rem; margin: 1rem 0; }
+.provider-form input, .provider-list input { width: 100%; border: 1px solid var(--line); border-radius: .9rem; padding: .75rem .85rem; background: rgba(255,255,255,.08); color: var(--text); }
+.provider-list article { grid-template-columns: minmax(0, 1fr) 5.5rem repeat(3, auto); }
+.provider-list small { display: block; margin-top: .3rem; color: var(--muted); overflow-wrap: anywhere; }
+.stream-panel { margin-top: 1rem; }
+.stream-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+.stream-list { display: grid; gap: .65rem; margin-top: 1rem; }
+.stream-card { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, auto) auto auto; gap: .7rem; align-items: center; padding: .9rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--glass); }
+.stream-card small { display: block; margin-top: .25rem; color: var(--muted); }
+.poster-card a:not(:has(img)) { display: grid; place-items: end start; min-height: 18rem; padding: .9rem; background: linear-gradient(135deg, rgba(124,60,255,.22), rgba(0,229,255,.12)); }
+@media (max-width: 900px) {
+  .provider-form, .provider-list article, .stream-card { grid-template-columns: 1fr; }
+  .stream-heading { align-items: flex-start; flex-direction: column; }
+}
