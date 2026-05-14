@@ -254,7 +254,8 @@ async function fetchAddonStreams(addon, type, id) {
 
 function normalizeStream(stream, addon) {
   const title = stream.title || stream.name || stream.description || 'Untitled stream';
-  const url = stream.url || stream.externalUrl || stream.infoHash || '';
+  const url = stream.url || '';
+  const externalUrl = stream.externalUrl || '';
   const isTorrent = Boolean(stream.infoHash) || url.startsWith('magnet:');
   const magnet = stream.infoHash
     ? `magnet:?xt=urn:btih:${stream.infoHash}${stream.fileIdx ? `&so=${stream.fileIdx}` : ''}`
@@ -265,6 +266,7 @@ function normalizeStream(stream, addon) {
     addonName: addon.name,
     quality: stream.behaviorHints?.videoSize || stream.name || stream.tag || '',
     url,
+    externalUrl,
     magnet,
     isTorrent,
   };
@@ -326,8 +328,9 @@ function renderEpisodePicker(seasons, selectedVideoId) {
   `;
 }
 
-function renderStream(stream, index) {
+function renderStream(stream) {
   const canPlayInBrowser = stream.url && !stream.isTorrent;
+
   return `
     <article class="stream-item">
       <div>
@@ -336,6 +339,7 @@ function renderStream(stream, index) {
       </div>
       <div class="stream-actions">
         ${canPlayInBrowser ? `<button type="button" data-play-url="${escapeAttribute(stream.url)}">Play</button>` : ''}
+        ${isHttpUrl(stream.externalUrl) ? `<a class="secondary button-link" href="${escapeAttribute(stream.externalUrl)}" target="_blank" rel="noreferrer">Open</a>` : ''}
         ${stream.magnet ? `<button class="secondary" type="button" data-copy-stream="${escapeAttribute(stream.magnet)}">Copy ${stream.isTorrent ? 'magnet' : 'link'}</button>` : ''}
       </div>
     </article>
@@ -426,17 +430,88 @@ async function copyStreamLink(value, button) {
 }
 
 function playInModal(url) {
+  destroyActivePlayer();
+
   const player = document.createElement('div');
   player.className = 'player-dock';
   player.innerHTML = `
-    <video src="${escapeAttribute(url)}" controls autoplay playsinline></video>
-    <button type="button" aria-label="Close player">×</button>
+    <div class="player-header">
+      <div>
+        <p class="eyebrow">Now playing</p>
+        <p class="player-status" role="status">Starting stream…</p>
+      </div>
+      <button type="button" aria-label="Close player">×</button>
+    </div>
+    <video controls autoplay playsinline></video>
   `;
-  player.querySelector('button').addEventListener('click', () => player.remove());
+
+  const video = player.querySelector('video');
+  const status = player.querySelector('.player-status');
+  const closeButton = player.querySelector('button');
+
+  closeButton.addEventListener('click', () => {
+    destroyActivePlayer();
+  });
+  video.addEventListener('playing', () => {
+    status.textContent = 'Stream is playing.';
+  });
+  video.addEventListener('error', () => {
+    status.textContent = 'This stream could not be played in the browser. Try copying the link instead.';
+  });
+
   elements.modalContent.prepend(player);
+  configurePlayerSource({ player, video, status, url });
+  player.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function configurePlayerSource({ player, video, status, url }) {
+  if (isHlsUrl(url) && !video.canPlayType('application/vnd.apple.mpegurl')) {
+    if (!window.Hls?.isSupported()) {
+      status.textContent = 'HLS playback is not supported in this browser.';
+      return;
+    }
+
+    const hls = new window.Hls();
+    player.hls = hls;
+    hls.attachMedia(video);
+    hls.on(window.Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(url));
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => startPlayback(video, status));
+    hls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) {
+        status.textContent = 'This HLS stream could not be loaded.';
+      }
+    });
+    return;
+  }
+
+  video.src = url;
+  startPlayback(video, status);
+}
+
+async function startPlayback(video, status) {
+  try {
+    await video.play();
+  } catch (error) {
+    status.textContent = 'Click the video play control to start this stream.';
+  }
+}
+
+function isHlsUrl(url) {
+  return url.split('?')[0].toLowerCase().endsWith('.m3u8');
+}
+
+function isHttpUrl(url) {
+  return /^https?:\/\//i.test(url);
+}
+
+function destroyActivePlayer() {
+  const player = elements.modalContent.querySelector('.player-dock');
+  player?.hls?.destroy();
+  player?.remove();
 }
 
 function closeModal() {
+  destroyActivePlayer();
   elements.modal.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('modal-open');
   state.activeTitle = null;
