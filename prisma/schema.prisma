@@ -25,6 +25,9 @@ model User {
   ratings          Rating[]
   reviews          Review[]
   notifications    Notification[]
+  sessions         Session[]
+  oauthAccounts    OAuthAccount[]
+  playbackSessions PlaybackSession[]
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 }
@@ -163,4 +166,223 @@ model Notification {
   readAt    DateTime?
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
+}
+
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  ipAddress String?
+  userAgent String?
+  expiresAt DateTime
+  revokedAt DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@index([userId, expiresAt])
+}
+
+model OAuthAccount {
+  id                 String   @id @default(cuid())
+  userId             String
+  provider           String
+  providerAccountId  String
+  accessTokenCipher  String?
+  refreshTokenCipher String?
+  expiresAt          DateTime?
+  scope              String?
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  @@unique([provider, providerAccountId])
+  @@index([userId, provider])
+}
+
+model Media {
+  id              String          @id @default(cuid())
+  tmdbId          Int?
+  imdbId          String?
+  traktId         Int?
+  mediaType       String
+  title           String
+  originalTitle   String?
+  overview        String?
+  releaseDate     DateTime?
+  runtimeMinutes  Int?
+  posterPath      String?
+  backdropPath    String?
+  voteAverage     Float?
+  popularity      Float?
+  status          String?
+  externalIds     ExternalId[]
+  genres          MediaGenre[]
+  credits         Credit[]
+  images          ImageAsset[]
+  trailers        Trailer[]
+  recommendations Recommendation[] @relation("MediaRecommendations")
+  recommendedBy   Recommendation[] @relation("RecommendedMedia")
+  movie           Movie?
+  tvShow          TVShow?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  @@unique([mediaType, tmdbId])
+  @@index([imdbId])
+  @@index([mediaType, popularity])
+}
+
+model Movie {
+  id       String @id @default(cuid())
+  mediaId  String @unique
+  budget   Int?
+  revenue  Int?
+  media    Media  @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+}
+
+model TVShow {
+  id             String   @id @default(cuid())
+  mediaId        String   @unique
+  firstAirDate   DateTime?
+  lastAirDate    DateTime?
+  seasons        Season[]
+  media          Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+}
+
+model Season {
+  id           String    @id @default(cuid())
+  tvShowId     String
+  seasonNumber Int
+  title        String?
+  overview     String?
+  posterPath   String?
+  airDate      DateTime?
+  episodes     Episode[]
+  tvShow       TVShow    @relation(fields: [tvShowId], references: [id], onDelete: Cascade)
+  @@unique([tvShowId, seasonNumber])
+}
+
+model Episode {
+  id            String   @id @default(cuid())
+  seasonId      String
+  tmdbId        Int?
+  episodeNumber Int
+  title         String
+  overview      String?
+  stillPath     String?
+  airDate       DateTime?
+  runtimeMin    Int?
+  season        Season   @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  @@unique([seasonId, episodeNumber])
+  @@index([tmdbId])
+}
+
+model Genre {
+  id      String       @id @default(cuid())
+  tmdbId  Int          @unique
+  name    String
+  media   MediaGenre[]
+}
+
+model MediaGenre {
+  mediaId String
+  genreId String
+  media   Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  genre   Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  @@id([mediaId, genreId])
+}
+
+model Person {
+  id          String   @id @default(cuid())
+  tmdbId      Int      @unique
+  name        String
+  profilePath String?
+  credits     Credit[]
+}
+
+model Credit {
+  id         String  @id @default(cuid())
+  mediaId    String
+  personId   String
+  department String
+  job        String?
+  character  String?
+  sortOrder  Int?
+  media      Media   @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  person     Person  @relation(fields: [personId], references: [id], onDelete: Cascade)
+  @@index([mediaId, department])
+  @@index([personId])
+}
+
+model ExternalId {
+  id       String @id @default(cuid())
+  mediaId  String
+  source   String
+  value    String
+  media    Media  @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  @@unique([source, value])
+  @@index([mediaId])
+}
+
+model ImageAsset {
+  id          String   @id @default(cuid())
+  mediaId     String
+  path        String
+  kind        String
+  width       Int?
+  height      Int?
+  language    String?
+  prefetchedAt DateTime?
+  media       Media    @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  @@unique([mediaId, path, kind])
+}
+
+model Trailer {
+  id       String @id @default(cuid())
+  mediaId  String
+  site     String
+  key      String
+  name     String
+  type     String
+  official Boolean @default(false)
+  media    Media  @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  @@unique([site, key])
+}
+
+model Recommendation {
+  id                  String @id @default(cuid())
+  mediaId             String
+  recommendedMediaId  String
+  score               Float?
+  media               Media  @relation("MediaRecommendations", fields: [mediaId], references: [id], onDelete: Cascade)
+  recommendedMedia    Media  @relation("RecommendedMedia", fields: [recommendedMediaId], references: [id], onDelete: Cascade)
+  @@unique([mediaId, recommendedMediaId])
+}
+
+model PlaybackSession {
+  id          String   @id @default(cuid())
+  userId      String
+  mediaType   String
+  tmdbId      Int?
+  imdbId      String?
+  season      Int?
+  episode     Int?
+  streamHash  String
+  startedAt   DateTime @default(now())
+  endedAt     DateTime?
+  lastPosition Int      @default(0)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, startedAt])
+  @@index([mediaType, tmdbId, imdbId])
+}
+
+model JobRun {
+  id          String   @id @default(cuid())
+  name        String
+  status      String
+  payload     Json?
+  result      Json?
+  attempts    Int      @default(0)
+  scheduledAt DateTime @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  @@index([name, status, scheduledAt])
 }

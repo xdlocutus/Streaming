@@ -14,6 +14,9 @@ return [
         'redirect_uri' => getenv('TRAKT_REDIRECT_URI') ?: 'http://localhost:8000/app/trakt-oauth.php?action=callback',
         'cache_ttl' => 900,
     ],
+    'cache' => [
+        'redis_url' => getenv('REDIS_URL') ?: '',
+    ],
     'security' => [
         'jwt_secret' => getenv('JWT_SECRET') ?: 'change-me-in-production',
         'rate_limit_per_minute' => 90,
