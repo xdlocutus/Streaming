@@ -10,6 +10,7 @@ const state = {
   library: loadFromStorage(STORAGE_KEYS.library, []),
   proxy: localStorage.getItem(STORAGE_KEYS.proxy) || '',
   activeTitle: null,
+  ffmpeg: null,
 };
 
 const elements = {
@@ -460,7 +461,7 @@ function playInModal(url) {
     setPlayerStatus(status, 'Stream is playing.');
   });
   video.addEventListener('error', () => {
-    setPlayerError(status, 'The embedded browser player could not decode this stream. Use Open stream or Copy link to try it in a desktop player, or use a transcoding proxy for this file type.');
+    handleVideoPlaybackError({ player, video, status, url });
   });
 
   elements.modalContent.prepend(player);
@@ -491,6 +492,12 @@ async function configurePlayerSource({ player, video, status, url }) {
   if (format === 'flv' || format === 'mpegts' || format === 'm2ts') {
     const loadedWithMpegts = await loadWithMpegts({ player, video, status, url: playbackUrl, format });
     if (loadedWithMpegts) return;
+  }
+
+  if (shouldTranscodeBeforeNative(format)) {
+    player.transcodeAttempted = true;
+    const loadedWithFfmpeg = await loadWithFfmpeg({ player, video, status, url: playbackUrl, format });
+    if (loadedWithFfmpeg) return;
   }
 
   await loadNativeVideo({ video, status, url: playbackUrl });
@@ -544,6 +551,72 @@ async function loadWithMpegts({ player, video, status, url, format }) {
   }
 }
 
+async function loadWithFfmpeg({ player, video, status, url, format }) {
+  if (!window.FFmpeg?.createFFmpeg || player.ffmpegLoading) return false;
+
+  player.ffmpegLoading = true;
+  setPlayerStatus(status, `Preparing ${getFormatLabel(format)} for browser playback. This can take a while for large files…`);
+
+  try {
+    const ffmpeg = await getFfmpeg();
+    const inputName = `input.${getInputExtension(format)}`;
+    const outputName = 'output.mp4';
+    safeUnlink(ffmpeg, inputName);
+    safeUnlink(ffmpeg, outputName);
+
+    ffmpeg.FS('writeFile', inputName, await window.FFmpeg.fetchFile(url));
+    await transcodeToMp4(ffmpeg, inputName, outputName);
+
+    const data = ffmpeg.FS('readFile', outputName);
+    const objectUrl = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+    player.objectUrl = objectUrl;
+    safeUnlink(ffmpeg, inputName);
+    safeUnlink(ffmpeg, outputName);
+    await loadNativeVideo({ video, status, url: objectUrl });
+    return true;
+  } catch (error) {
+    return false;
+  } finally {
+    player.ffmpegLoading = false;
+  }
+}
+
+async function getFfmpeg() {
+  if (!state.ffmpeg) {
+    state.ffmpeg = window.FFmpeg.createFFmpeg({ log: false });
+  }
+
+  if (!state.ffmpeg.isLoaded()) {
+    await state.ffmpeg.load();
+  }
+
+  return state.ffmpeg;
+}
+
+async function transcodeToMp4(ffmpeg, inputName, outputName) {
+  try {
+    await ffmpeg.run('-i', inputName, '-c', 'copy', '-movflags', 'faststart', outputName);
+  } catch (error) {
+    safeUnlink(ffmpeg, outputName);
+    await ffmpeg.run(
+      '-i', inputName,
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-c:a', 'aac',
+      '-movflags', 'faststart',
+      outputName,
+    );
+  }
+}
+
+function safeUnlink(ffmpeg, fileName) {
+  try {
+    ffmpeg.FS('unlink', fileName);
+  } catch (error) {
+    // The in-memory file may not exist yet.
+  }
+}
+
 async function loadNativeVideo({ video, status, url }) {
   video.src = url;
   video.load();
@@ -565,6 +638,17 @@ function detectStreamFormat(url) {
   if (path.endsWith('.flv')) return 'flv';
   if (path.endsWith('.m2ts') || path.endsWith('.m2t') || path.endsWith('.mts')) return 'm2ts';
   if (path.endsWith('.ts')) return 'mpegts';
+  if (path.endsWith('.avi')) return 'avi';
+  if (path.endsWith('.mkv')) return 'mkv';
+  if (path.endsWith('.wmv')) return 'wmv';
+  if (path.endsWith('.asf')) return 'asf';
+  if (path.endsWith('.mpg') || path.endsWith('.mpeg')) return 'mpeg';
+  if (path.endsWith('.3gp') || path.endsWith('.3g2')) return '3gp';
+  if (path.endsWith('.mov')) return 'mov';
+  if (path.endsWith('.m4v')) return 'm4v';
+  if (path.endsWith('.mp4')) return 'mp4';
+  if (path.endsWith('.webm')) return 'webm';
+  if (path.endsWith('.ogv') || path.endsWith('.ogg')) return 'ogg';
   return 'native';
 }
 
@@ -578,18 +662,76 @@ function getUrlPath(url) {
 
 function getFormatLabel(format) {
   const labels = {
+    '3gp': '3GP',
+    asf: 'ASF',
+    avi: 'AVI',
     dash: 'DASH',
     flv: 'FLV',
     hls: 'HLS',
     m2ts: 'M2TS',
+    m4v: 'M4V',
+    mkv: 'MKV',
+    mov: 'MOV',
+    mp4: 'MP4',
+    mpeg: 'MPEG',
     mpegts: 'MPEG-TS',
     native: 'direct video',
+    ogg: 'Ogg video',
+    webm: 'WebM',
+    wmv: 'WMV',
   };
   return labels[format] || 'video';
 }
 
 function getMpegtsType(format) {
   return format === 'm2ts' ? 'm2ts' : format;
+}
+
+function getInputExtension(format) {
+  const extensions = {
+    '3gp': '3gp',
+    asf: 'asf',
+    avi: 'avi',
+    flv: 'flv',
+    m2ts: 'm2ts',
+    mkv: 'mkv',
+    m4v: 'm4v',
+    mov: 'mov',
+    mp4: 'mp4',
+    mpeg: 'mpg',
+    mpegts: 'ts',
+    native: 'media',
+    ogg: 'ogv',
+    webm: 'webm',
+    wmv: 'wmv',
+  };
+  return extensions[format] || 'video';
+}
+
+function shouldTranscodeBeforeNative(format) {
+  return ['3gp', 'asf', 'avi', 'mkv', 'mpeg', 'wmv'].includes(format);
+}
+
+function canTranscodeFormat(format) {
+  return shouldTranscodeBeforeNative(format)
+    || ['flv', 'm2ts', 'm4v', 'mov', 'mp4', 'mpegts', 'native', 'ogg', 'webm'].includes(format);
+}
+
+async function handleVideoPlaybackError({ player, video, status, url }) {
+  const format = detectStreamFormat(url);
+  if (!player.transcodeAttempted && canTranscodeFormat(format)) {
+    player.transcodeAttempted = true;
+    const loadedWithFfmpeg = await loadWithFfmpeg({
+      player,
+      video,
+      status,
+      url: buildMediaUrl(url),
+      format,
+    });
+    if (loadedWithFfmpeg) return;
+  }
+
+  setPlayerError(status, 'This stream format or codec is not directly supported by the browser. StreamBridge tried the available in-browser loaders; use Open stream/Copy link for a desktop player, or configure a transcoding proxy for very large AVI/MKV/WMV files.');
 }
 
 function setPlayerStatus(status, message) {
@@ -614,6 +756,9 @@ function destroyActivePlayer() {
   const player = elements.modalContent.querySelector('.player-dock');
   player?.shaka?.destroy();
   player?.mpegts?.destroy();
+  if (player?.objectUrl) {
+    URL.revokeObjectURL(player.objectUrl);
+  }
   player?.remove();
 }
 
