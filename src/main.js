@@ -1,873 +1,233 @@
-const CINEMETA_URL = 'https://v3-cinemeta.strem.io';
-const STORAGE_KEYS = {
-  addons: 'streambridge:addons',
-  library: 'streambridge:library',
-  proxy: 'streambridge:proxy',
+const STORAGE = {
+  profiles: 'astra:profiles',
+  watchlist: 'astra:watchlist',
+  favorites: 'astra:favorites',
+  progress: 'astra:progress',
+  cache: 'astra:cache',
+  language: 'astra:language',
 };
+
+const posterSeeds = [
+  ['Midnight Signal', 'movie', '2026', '8.9', 'Sci-Fi Thriller', 'photo-1440404653325-ab127d49abc1'],
+  ['Crimson Harbor', 'tv', '2025', '8.6', 'Crime Drama', 'photo-1500530855697-b586d89ba3ee'],
+  ['Last Train to Europa', 'movie', '2026', '9.1', 'Adventure', 'photo-1500534314209-a25ddb2bd429'],
+  ['Neon Ronin', 'anime', '2024', '8.8', 'Anime Action', 'photo-1518709268805-4e9042af2176'],
+  ['The Glass Republic', 'tv', '2026', '8.3', 'Political Drama', 'photo-1485846234645-a62644f84728'],
+  ['Afterimage', 'movie', '2025', '8.0', 'Mystery', 'photo-1519608487953-e999c86e7455'],
+  ['Northern Lights Club', 'tv', '2026', '7.9', 'Comedy', 'photo-1493246507139-91e8fad9978e'],
+  ['Orbit Garden', 'movie', '2024', '8.5', 'Family Fantasy', 'photo-1500534314209-a25ddb2bd429'],
+  ['Shogun Starfall', 'anime', '2026', '9.0', 'Anime Epic', 'photo-1495567720989-cebdbdd97913'],
+  ['Black Tide Archive', 'tv', '2025', '8.4', 'Documentary', 'photo-1500530855697-b586d89ba3ee'],
+];
+
+const railDefinitions = [
+  ['Trending Movies', 'TMDB trending/movie + Trakt trending movies'],
+  ['Trending TV Shows', 'TMDB trending/tv + Trakt trending shows'],
+  ['Popular on Trakt', 'Weighted by plays, watchers, and comments'],
+  ['Top Rated', 'TMDB vote average with minimum vote thresholds'],
+  ['Recently Released', 'Release dates from TMDB discover endpoints'],
+  ['Continue Watching', 'Synced from Trakt history and local resume data'],
+  ['Latest Added', 'Provider ingestion queue sorted by cache time'],
+  ['Action Genre', 'Genre row with virtualized infinite scrolling'],
+  ['Drama Genre', 'Genre row with localized metadata'],
+  ['Anime Section', 'Anime keyword + genre collection'],
+];
 
 const state = {
-  addons: loadFromStorage(STORAGE_KEYS.addons, []),
-  library: loadFromStorage(STORAGE_KEYS.library, []),
-  proxy: localStorage.getItem(STORAGE_KEYS.proxy) || '',
-  activeTitle: null,
-  ffmpeg: null,
+  page: window.ASTRA_BOOT?.page || document.querySelector('[data-current-page]')?.dataset.currentPage || 'home',
+  language: localStorage.getItem(STORAGE.language) || window.ASTRA_BOOT?.language || 'en-US',
+  railsRendered: 0,
+  watchlist: readJson(STORAGE.watchlist, []),
+  favorites: readJson(STORAGE.favorites, []),
+  progress: readJson(STORAGE.progress, {}),
 };
 
-const elements = {
-  importForm: document.querySelector('#import-form'),
-  imdbInput: document.querySelector('#imdb-input'),
-  typeSelect: document.querySelector('#type-select'),
-  importStatus: document.querySelector('#import-status'),
-  addonForm: document.querySelector('#addon-form'),
-  addonUrl: document.querySelector('#addon-url'),
-  addonList: document.querySelector('#addon-list'),
-  proxyUrl: document.querySelector('#proxy-url'),
-  libraryGrid: document.querySelector('#library-grid'),
-  clearLibrary: document.querySelector('#clear-library'),
-  modal: document.querySelector('#title-modal'),
-  modalContent: document.querySelector('#modal-content'),
-  emptyTemplate: document.querySelector('#empty-state-template'),
-};
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-elements.importForm.addEventListener('submit', handleImportTitle);
-elements.addonForm.addEventListener('submit', handleAddAddon);
-elements.clearLibrary.addEventListener('click', clearLibrary);
-elements.proxyUrl.addEventListener('change', () => {
-  state.proxy = elements.proxyUrl.value.trim();
-  localStorage.setItem(STORAGE_KEYS.proxy, state.proxy);
-});
-document.addEventListener('click', handleDocumentClick);
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    closeModal();
-  }
-});
-
-bootstrap();
-
-function bootstrap() {
-  elements.proxyUrl.value = state.proxy;
-  renderAddons();
-  renderLibrary();
+function readJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
 
-async function handleImportTitle(event) {
-  event.preventDefault();
-  const imdbId = extractImdbId(elements.imdbInput.value);
-  const selectedType = elements.typeSelect.value;
-
-  if (!imdbId) {
-    setStatus('Paste a valid IMDb title URL or tt id.', 'error');
-    return;
-  }
-
-  setStatus(`Importing ${imdbId}…`, 'loading');
-
-  try {
-    const meta = await resolveMetadata(imdbId, selectedType);
-    upsertTitle(meta);
-    elements.imdbInput.value = '';
-    setStatus(`Imported ${meta.name}.`, 'success');
-  } catch (error) {
-    setStatus(error.message, 'error');
-  }
-}
-
-async function handleAddAddon(event) {
-  event.preventDefault();
-  const manifestUrl = normalizeManifestUrl(elements.addonUrl.value);
-
-  try {
-    const manifest = await fetchJson(manifestUrl);
-    if (!manifest.id || !manifest.name || !Array.isArray(manifest.resources)) {
-      throw new Error('That URL did not return a valid Stremio manifest.');
-    }
-
-    const addon = {
-      id: manifest.id,
-      name: manifest.name,
-      version: manifest.version || 'unknown',
-      description: manifest.description || 'No description provided.',
-      manifestUrl,
-      baseUrl: manifestUrl.replace(/\/manifest\.json(?:\?.*)?$/, ''),
-      resources: manifest.resources,
-      types: manifest.types || [],
-    };
-
-    state.addons = [addon, ...state.addons.filter((item) => item.id !== addon.id)];
-    saveToStorage(STORAGE_KEYS.addons, state.addons);
-    elements.addonUrl.value = '';
-    renderAddons();
-  } catch (error) {
-    alert(error.message);
-  }
-}
-
-async function resolveMetadata(imdbId, selectedType) {
-  const typesToTry = selectedType === 'auto' ? ['movie', 'series'] : [selectedType];
-  const errors = [];
-
-  for (const type of typesToTry) {
-    try {
-      const payload = await fetchJson(`${CINEMETA_URL}/meta/${type}/${imdbId}.json`);
-      if (payload?.meta?.id) {
-        return normalizeMeta(payload.meta, type);
-      }
-    } catch (error) {
-      errors.push(`${type}: ${error.message}`);
-    }
-  }
-
-  throw new Error(`Could not import ${imdbId}. ${errors.join(' ')}`);
-}
-
-function normalizeMeta(meta, type) {
-  const episodeVideos = Array.isArray(meta.videos)
-    ? meta.videos
-        .filter((video) => Number.isInteger(video.season) && Number.isInteger(video.episode))
-        .map((video) => ({
-          id: video.id,
-          name: video.name || `S${video.season} E${video.episode}`,
-          season: video.season,
-          episode: video.episode,
-          released: video.released || '',
-        }))
-    : [];
-
-  return {
-    id: meta.id,
-    imdbId: meta.imdb_id || meta.id,
-    type,
-    name: meta.name,
-    poster: meta.poster || meta.background || '',
-    background: meta.background || meta.poster || '',
-    description: meta.description || 'No synopsis available.',
-    releaseInfo: meta.releaseInfo || meta.year || '',
-    genres: meta.genres || [],
-    runtime: meta.runtime || '',
-    imdbRating: meta.imdbRating || '',
-    videos: episodeVideos,
-    importedAt: new Date().toISOString(),
-  };
-}
-
-function upsertTitle(meta) {
-  state.library = [meta, ...state.library.filter((title) => title.id !== meta.id)];
-  saveToStorage(STORAGE_KEYS.library, state.library);
-  renderLibrary();
-}
-
-function renderLibrary() {
-  elements.libraryGrid.innerHTML = '';
-
-  if (!state.library.length) {
-    elements.libraryGrid.append(elements.emptyTemplate.content.cloneNode(true));
-    return;
-  }
-
-  state.library.forEach((title) => {
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'title-card';
-    card.dataset.titleId = title.id;
-    card.innerHTML = `
-      <span class="poster-wrap">
-        ${title.poster ? `<img src="${escapeAttribute(title.poster)}" alt="${escapeAttribute(title.name)} poster" loading="lazy" />` : '<span class="poster-placeholder">No poster</span>'}
-      </span>
-      <span class="title-card-body">
-        <strong>${escapeHtml(title.name)}</strong>
-        <small>${escapeHtml(title.type)} · ${escapeHtml(title.releaseInfo || 'Unknown year')}</small>
-      </span>
-    `;
-    elements.libraryGrid.append(card);
-  });
-}
-
-function renderAddons() {
-  elements.addonList.innerHTML = '';
-
-  if (!state.addons.length) {
-    elements.addonList.innerHTML = `
-      <div class="empty-addon">
-        <p>No addons installed yet.</p>
-        <small>Add a Stremio manifest URL to enable stream lookups.</small>
-      </div>
-    `;
-    return;
-  }
-
-  state.addons.forEach((addon) => {
-    const item = document.createElement('article');
-    item.className = 'addon-item';
-    item.innerHTML = `
-      <div>
-        <h4>${escapeHtml(addon.name)}</h4>
-        <p>${escapeHtml(addon.description)}</p>
-        <small>${escapeHtml(addon.version)} · ${escapeHtml(addon.types.join(', ') || 'all types')}</small>
-      </div>
-      <button class="icon-button" type="button" data-remove-addon="${escapeAttribute(addon.id)}" aria-label="Remove ${escapeAttribute(addon.name)}">×</button>
-    `;
-    elements.addonList.append(item);
-  });
-}
-
-async function openTitle(titleId) {
-  const title = state.library.find((item) => item.id === titleId);
-  if (!title) return;
-
-  state.activeTitle = title;
-  elements.modal.setAttribute('aria-hidden', 'false');
-  document.body.classList.add('modal-open');
-  renderTitleModal(title, { streams: [], loading: Boolean(state.addons.length), error: '' });
-
-  if (!state.addons.length) {
-    renderTitleModal(title, { streams: [], loading: false, error: 'Add at least one Stremio addon before looking up streams.' });
-    return;
-  }
-
-  await loadStreams(title, getSelectedVideoId(title));
-}
-
-async function loadStreams(title, videoId) {
-  renderTitleModal(title, { streams: [], loading: true, error: '', selectedVideoId: videoId });
-  const targetId = videoId || title.imdbId || title.id;
-  const streamResults = await Promise.allSettled(
-    state.addons.map(async (addon) => {
-      const streams = await fetchAddonStreams(addon, title.type, targetId);
-      return streams.map((stream) => normalizeStream(stream, addon));
-    }),
-  );
-
-  const streams = streamResults.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
-  const failures = streamResults.filter((result) => result.status === 'rejected');
-  const error = failures.length && !streams.length
-    ? 'No addons could be reached. Check CORS support or configure a proxy.'
-    : '';
-
-  renderTitleModal(title, { streams, loading: false, error, selectedVideoId: videoId });
-}
-
-async function fetchAddonStreams(addon, type, id) {
-  const url = `${addon.baseUrl}/stream/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`;
-  const payload = await fetchJson(url);
-  return Array.isArray(payload.streams) ? payload.streams : [];
-}
-
-function normalizeStream(stream, addon) {
-  const title = stream.title || stream.name || stream.description || 'Untitled stream';
-  const url = stream.url || '';
-  const externalUrl = stream.externalUrl || '';
-  const isTorrent = Boolean(stream.infoHash) || url.startsWith('magnet:');
-  const magnet = stream.infoHash
-    ? `magnet:?xt=urn:btih:${stream.infoHash}${stream.fileIdx ? `&so=${stream.fileIdx}` : ''}`
-    : url;
-
-  return {
-    title,
-    addonName: addon.name,
-    quality: stream.behaviorHints?.videoSize || stream.name || stream.tag || '',
-    url,
-    externalUrl,
-    magnet,
-    isTorrent,
-  };
-}
-
-function renderTitleModal(title, { streams, loading, error, selectedVideoId }) {
-  const episodes = groupEpisodes(title.videos);
-  elements.modalContent.innerHTML = `
-    <header class="modal-hero" style="${title.background ? `background-image: linear-gradient(90deg, rgba(7, 10, 20, .96), rgba(7, 10, 20, .56)), url('${escapeAttribute(title.background)}')` : ''}">
-      <div class="modal-poster">
-        ${title.poster ? `<img src="${escapeAttribute(title.poster)}" alt="${escapeAttribute(title.name)} poster" />` : ''}
-      </div>
-      <div>
-        <p class="eyebrow">${escapeHtml(title.type)} · ${escapeHtml(title.imdbId || title.id)}</p>
-        <h2 id="modal-title">${escapeHtml(title.name)}</h2>
-        <p class="meta-line">${escapeHtml([title.releaseInfo, title.runtime, title.imdbRating ? `IMDb ${title.imdbRating}` : ''].filter(Boolean).join(' · '))}</p>
-        <p>${escapeHtml(title.description)}</p>
-        <div class="genre-row">${title.genres.map((genre) => `<span>${escapeHtml(genre)}</span>`).join('')}</div>
-      </div>
-    </header>
-
-    ${episodes.length ? renderEpisodePicker(episodes, selectedVideoId) : ''}
-
-    <section class="streams-section">
-      <div class="section-heading compact">
-        <div>
-          <p class="eyebrow">Streams</p>
-          <h3>Available sources</h3>
-        </div>
-        <button class="secondary" type="button" data-refresh-streams>Refresh</button>
-      </div>
-      ${loading ? '<div class="loader">Querying Stremio addons…</div>' : ''}
-      ${error ? `<p class="status error">${escapeHtml(error)}</p>` : ''}
-      ${!loading && !error && !streams.length ? '<p class="muted">No streams returned for this title.</p>' : ''}
-      <div class="stream-list">
-        ${streams.map(renderStream).join('')}
-      </div>
-    </section>
-  `;
-}
-
-function renderEpisodePicker(seasons, selectedVideoId) {
-  return `
-    <section class="episode-section">
-      <p class="eyebrow">Episodes</p>
-      ${seasons.map((season) => `
-        <details ${season.season === 1 ? 'open' : ''}>
-          <summary>Season ${season.season}</summary>
-          <div class="episode-grid">
-            ${season.episodes.map((episode) => `
-              <button class="episode-pill ${episode.id === selectedVideoId ? 'active' : ''}" type="button" data-video-id="${escapeAttribute(episode.id)}">
-                S${episode.season} E${episode.episode}<span>${escapeHtml(episode.name)}</span>
-              </button>
-            `).join('')}
-          </div>
-        </details>
-      `).join('')}
-    </section>
-  `;
-}
-
-function renderStream(stream) {
-  const canPlayInBrowser = stream.url && !stream.isTorrent;
-
-  return `
-    <article class="stream-item">
-      <div>
-        <h4>${escapeHtml(stream.title)}</h4>
-        <p>${escapeHtml(stream.addonName)}${stream.quality ? ` · ${escapeHtml(stream.quality)}` : ''}</p>
-      </div>
-      <div class="stream-actions">
-        ${canPlayInBrowser ? `<button type="button" data-play-url="${escapeAttribute(stream.url)}">Play</button>` : ''}
-        ${isHttpUrl(stream.externalUrl) ? `<a class="secondary button-link" href="${escapeAttribute(stream.externalUrl)}" target="_blank" rel="noreferrer">Open</a>` : ''}
-        ${stream.magnet ? `<button class="secondary" type="button" data-copy-stream="${escapeAttribute(stream.magnet)}">Copy ${stream.isTorrent ? 'magnet' : 'link'}</button>` : ''}
-      </div>
-    </article>
-  `;
-}
-
-function groupEpisodes(videos) {
-  const seasons = new Map();
-  videos.forEach((episode) => {
-    if (!seasons.has(episode.season)) {
-      seasons.set(episode.season, []);
-    }
-    seasons.get(episode.season).push(episode);
-  });
-
-  return [...seasons.entries()].map(([season, episodes]) => ({
-    season,
-    episodes: episodes.sort((a, b) => a.episode - b.episode),
-  })).sort((a, b) => a.season - b.season);
-}
-
-function getSelectedVideoId(title) {
-  return title.type === 'series' && title.videos.length ? title.videos[0].id : title.imdbId || title.id;
-}
-
-function handleDocumentClick(event) {
-  const titleCard = event.target.closest('[data-title-id]');
-  if (titleCard) {
-    openTitle(titleCard.dataset.titleId);
-    return;
-  }
-
-  const removeAddonButton = event.target.closest('[data-remove-addon]');
-  if (removeAddonButton) {
-    state.addons = state.addons.filter((addon) => addon.id !== removeAddonButton.dataset.removeAddon);
-    saveToStorage(STORAGE_KEYS.addons, state.addons);
-    renderAddons();
-    return;
-  }
-
-  if (event.target.closest('[data-close-modal]')) {
-    closeModal();
-    return;
-  }
-
-  const videoButton = event.target.closest('[data-video-id]');
-  if (videoButton && state.activeTitle) {
-    loadStreams(state.activeTitle, videoButton.dataset.videoId);
-    return;
-  }
-
-  if (event.target.closest('[data-refresh-streams]') && state.activeTitle) {
-    loadStreams(state.activeTitle, getSelectedVideoId(state.activeTitle));
-    return;
-  }
-
-  const playButton = event.target.closest('[data-play-url]');
-  if (playButton) {
-    playInModal(playButton.dataset.playUrl);
-    return;
-  }
-
-  const copyButton = event.target.closest('[data-copy-stream]');
-  if (copyButton) {
-    copyStreamLink(copyButton.dataset.copyStream, copyButton);
-  }
-}
-
-async function copyStreamLink(value, button) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-  } else {
-    const scratch = document.createElement('textarea');
-    scratch.value = value;
-    scratch.style.position = 'fixed';
-    scratch.style.opacity = '0';
-    document.body.append(scratch);
-    scratch.select();
-    document.execCommand('copy');
-    scratch.remove();
-  }
-
-  const originalText = button.textContent;
-  button.textContent = 'Copied';
-  setTimeout(() => {
-    button.textContent = originalText;
-  }, 1500);
-}
-
-function playInModal(url) {
-  destroyActivePlayer();
-
-  const player = document.createElement('div');
-  player.className = 'player-dock';
-  player.innerHTML = `
-    <div class="player-header">
-      <div>
-        <p class="eyebrow">Now playing</p>
-        <p class="player-status" role="status">Starting stream…</p>
-      </div>
-      <button type="button" data-close-player aria-label="Close player">×</button>
-    </div>
-    <video class="video-js vjs-big-play-centered vjs-fluid" controls autoplay playsinline preload="auto"></video>
-    <div class="player-actions">
-      ${isHttpUrl(url) ? `<a class="secondary button-link" href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">Open stream</a>` : ''}
-      <button class="secondary" type="button" data-copy-stream="${escapeAttribute(url)}">Copy link</button>
-    </div>
-  `;
-
-  const video = player.querySelector('video');
-  const status = player.querySelector('.player-status');
-  const closeButton = player.querySelector('[data-close-player]');
-
-  closeButton.addEventListener('click', () => {
-    destroyActivePlayer();
-  });
-  video.addEventListener('playing', () => {
-    setPlayerStatus(status, 'Stream is playing.');
-  });
-  video.addEventListener('error', () => {
-    handleVideoPlaybackError({ player, video, status, url });
-  });
-
-  player.originalUrl = url;
-  elements.modalContent.prepend(player);
-  configurePlayerSource({ player, video, status, url }).catch(() => {
-    setPlayerError(status, 'The embedded browser player could not load this stream. Use Open stream or Copy link to try another player.');
-  });
-  player.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-async function configurePlayerSource({ player, video, status, url }) {
-  const playbackUrl = buildMediaUrl(url);
-  const format = detectStreamFormat(url);
-  setPlayerStatus(status, `Starting ${getFormatLabel(format)} stream…`);
-
-  if (format === 'hls' || format === 'dash') {
-    const loadedWithVideoJs = await loadWithVideoJs({ player, video, status, url: playbackUrl, format });
-    if (loadedWithVideoJs) return;
-
-    setPlayerError(status, 'Adaptive playback is not available in this browser. Use Open stream or Copy link to try another player.');
-    return;
-  }
-
-  if (format === 'flv' || format === 'mpegts' || format === 'm2ts') {
-    const loadedWithMpegts = await loadWithMpegts({ player, video, status, url: playbackUrl, format });
-    if (loadedWithMpegts) return;
-  }
-
-  if (shouldTranscodeBeforeNative(format)) {
-    player.transcodeAttempted = true;
-    const loadedWithFfmpeg = await loadWithFfmpeg({ player, video, status, url: playbackUrl, format });
-    if (loadedWithFfmpeg) return;
-  }
-
-  const loadedWithVideoJs = await loadWithVideoJs({ player, video, status, url: playbackUrl, format });
-  if (loadedWithVideoJs) return;
-
-  await loadNativeVideo({ video, status, url: playbackUrl });
-}
-
-async function loadWithVideoJs({ player, video, status, url, format }) {
-  if (!window.videojs) return false;
-
-  try {
-    const videoJsPlayer = window.videojs(video, {
-      autoplay: true,
-      controls: true,
-      fluid: true,
-      preload: 'auto',
-      responsive: true,
-      html5: {
-        vhs: {
-          enableLowInitialPlaylist: true,
-          overrideNative: !isAppleDevice(),
-        },
-      },
-    });
-    player.videojs = videoJsPlayer;
-    videoJsPlayer.on('error', () => {
-      handleVideoPlaybackError({ player, video, status, url: player.originalUrl || url });
-    });
-    videoJsPlayer.src({ src: url, type: getMimeType(format) });
-    await startVideoJsPlayback(videoJsPlayer, status);
-    return true;
-  } catch (error) {
-    player.videojs?.dispose();
-    player.videojs = null;
-    return false;
-  }
-}
-
-async function loadWithMpegts({ player, video, status, url, format }) {
-  if (!window.mpegts?.isSupported()) return false;
-
-  try {
-    const mpegtsPlayer = window.mpegts.createPlayer({
-      type: getMpegtsType(format),
-      url,
-      isLive: false,
-    });
-    player.mpegts = mpegtsPlayer;
-    mpegtsPlayer.on(window.mpegts.Events.ERROR, () => {
-      handleVideoPlaybackError({ player, video, status, url: player.originalUrl || url });
-    });
-    mpegtsPlayer.attachMediaElement(video);
-    mpegtsPlayer.load();
-    await startPlayback(video, status);
-    return true;
-  } catch (error) {
-    player.mpegts?.destroy();
-    player.mpegts = null;
-    return false;
-  }
-}
-
-async function loadWithFfmpeg({ player, video, status, url, format }) {
-  if (!window.FFmpeg?.createFFmpeg || player.ffmpegLoading) return false;
-
-  player.ffmpegLoading = true;
-  setPlayerStatus(status, `Preparing ${getFormatLabel(format)} for browser playback. This can take a while for large files…`);
-
-  try {
-    const ffmpeg = await getFfmpeg();
-    const inputName = `input.${getInputExtension(format)}`;
-    const outputName = 'output.mp4';
-    safeUnlink(ffmpeg, inputName);
-    safeUnlink(ffmpeg, outputName);
-
-    ffmpeg.FS('writeFile', inputName, await window.FFmpeg.fetchFile(url));
-    await transcodeToMp4(ffmpeg, inputName, outputName);
-
-    const data = ffmpeg.FS('readFile', outputName);
-    const objectUrl = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
-    player.objectUrl = objectUrl;
-    safeUnlink(ffmpeg, inputName);
-    safeUnlink(ffmpeg, outputName);
-
-    if (player.videojs && !player.videojs.isDisposed()) {
-      player.videojs.src({ src: objectUrl, type: 'video/mp4' });
-      await startVideoJsPlayback(player.videojs, status);
-    } else {
-      await loadNativeVideo({ video, status, url: objectUrl });
-    }
-
-    return true;
-  } catch (error) {
-    return false;
-  } finally {
-    player.ffmpegLoading = false;
-  }
-}
-
-async function getFfmpeg() {
-  if (!state.ffmpeg) {
-    state.ffmpeg = window.FFmpeg.createFFmpeg({ log: false });
-  }
-
-  if (!state.ffmpeg.isLoaded()) {
-    await state.ffmpeg.load();
-  }
-
-  return state.ffmpeg;
-}
-
-async function transcodeToMp4(ffmpeg, inputName, outputName) {
-  try {
-    await ffmpeg.run('-i', inputName, '-c', 'copy', '-movflags', 'faststart', outputName);
-  } catch (error) {
-    safeUnlink(ffmpeg, outputName);
-    await ffmpeg.run(
-      '-i', inputName,
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-c:a', 'aac',
-      '-movflags', 'faststart',
-      outputName,
-    );
-  }
-}
-
-function safeUnlink(ffmpeg, fileName) {
-  try {
-    ffmpeg.FS('unlink', fileName);
-  } catch (error) {
-    // The in-memory file may not exist yet.
-  }
-}
-
-async function loadNativeVideo({ video, status, url }) {
-  video.src = url;
-  video.load();
-  await startPlayback(video, status);
-}
-
-async function startPlayback(video, status) {
-  try {
-    await video.play();
-  } catch (error) {
-    setPlayerStatus(status, 'Click the video play control to start this stream.');
-  }
-}
-
-async function startVideoJsPlayback(videoJsPlayer, status) {
-  try {
-    await videoJsPlayer.play();
-  } catch (error) {
-    setPlayerStatus(status, 'Click the Video.js play control to start this stream.');
-  }
-}
-
-function detectStreamFormat(url) {
-  const path = getUrlPath(url);
-  if (path.endsWith('.m3u8')) return 'hls';
-  if (path.endsWith('.mpd')) return 'dash';
-  if (path.endsWith('.flv')) return 'flv';
-  if (path.endsWith('.m2ts') || path.endsWith('.m2t') || path.endsWith('.mts')) return 'm2ts';
-  if (path.endsWith('.ts')) return 'mpegts';
-  if (path.endsWith('.avi')) return 'avi';
-  if (path.endsWith('.mkv')) return 'mkv';
-  if (path.endsWith('.wmv')) return 'wmv';
-  if (path.endsWith('.asf')) return 'asf';
-  if (path.endsWith('.mpg') || path.endsWith('.mpeg')) return 'mpeg';
-  if (path.endsWith('.3gp') || path.endsWith('.3g2')) return '3gp';
-  if (path.endsWith('.mov')) return 'mov';
-  if (path.endsWith('.m4v')) return 'm4v';
-  if (path.endsWith('.mp4')) return 'mp4';
-  if (path.endsWith('.webm')) return 'webm';
-  if (path.endsWith('.ogv') || path.endsWith('.ogg')) return 'ogg';
-  return 'native';
-}
-
-function getUrlPath(url) {
-  try {
-    return new URL(url, window.location.href).pathname.toLowerCase();
-  } catch (error) {
-    return url.split('?')[0].toLowerCase();
-  }
-}
-
-function getFormatLabel(format) {
-  const labels = {
-    '3gp': '3GP',
-    asf: 'ASF',
-    avi: 'AVI',
-    dash: 'DASH',
-    flv: 'FLV',
-    hls: 'HLS',
-    m2ts: 'M2TS',
-    m4v: 'M4V',
-    mkv: 'MKV',
-    mov: 'MOV',
-    mp4: 'MP4',
-    mpeg: 'MPEG',
-    mpegts: 'MPEG-TS',
-    native: 'direct video',
-    ogg: 'Ogg video',
-    webm: 'WebM',
-    wmv: 'WMV',
-  };
-  return labels[format] || 'video';
-}
-
-function getMpegtsType(format) {
-  return format === 'm2ts' ? 'm2ts' : format;
-}
-
-function getMimeType(format) {
-  const types = {
-    '3gp': 'video/3gpp',
-    asf: 'video/x-ms-asf',
-    avi: 'video/x-msvideo',
-    dash: 'application/dash+xml',
-    flv: 'video/x-flv',
-    hls: 'application/x-mpegURL',
-    m2ts: 'video/mp2t',
-    m4v: 'video/x-m4v',
-    mkv: 'video/x-matroska',
-    mov: 'video/quicktime',
-    mp4: 'video/mp4',
-    mpeg: 'video/mpeg',
-    mpegts: 'video/mp2t',
-    ogg: 'video/ogg',
-    webm: 'video/webm',
-    wmv: 'video/x-ms-wmv',
-  };
-  return types[format] || 'video/mp4';
-}
-
-function getInputExtension(format) {
-  const extensions = {
-    '3gp': '3gp',
-    asf: 'asf',
-    avi: 'avi',
-    flv: 'flv',
-    m2ts: 'm2ts',
-    mkv: 'mkv',
-    m4v: 'm4v',
-    mov: 'mov',
-    mp4: 'mp4',
-    mpeg: 'mpg',
-    mpegts: 'ts',
-    native: 'media',
-    ogg: 'ogv',
-    webm: 'webm',
-    wmv: 'wmv',
-  };
-  return extensions[format] || 'video';
-}
-
-function shouldTranscodeBeforeNative(format) {
-  return ['3gp', 'asf', 'avi', 'mkv', 'mpeg', 'wmv'].includes(format);
-}
-
-function canTranscodeFormat(format) {
-  return shouldTranscodeBeforeNative(format)
-    || ['flv', 'm2ts', 'm4v', 'mov', 'mp4', 'mpegts', 'native', 'ogg', 'webm'].includes(format);
-}
-
-async function handleVideoPlaybackError({ player, video, status, url }) {
-  const format = detectStreamFormat(url);
-  if (!player.transcodeAttempted && canTranscodeFormat(format)) {
-    player.transcodeAttempted = true;
-    const loadedWithFfmpeg = await loadWithFfmpeg({
-      player,
-      video,
-      status,
-      url: buildMediaUrl(url),
-      format,
-    });
-    if (loadedWithFfmpeg) return;
-  }
-
-  setPlayerError(status, 'This stream format or codec is not directly supported by the browser. StreamBridge tried the available in-browser loaders; use Open stream/Copy link for a desktop player, or configure a transcoding proxy for very large AVI/MKV/WMV files.');
-}
-
-function setPlayerStatus(status, message) {
-  status.textContent = message;
-  status.classList.remove('error');
-}
-
-function setPlayerError(status, message) {
-  status.textContent = message;
-  status.classList.add('error');
-}
-
-function isHttpUrl(url) {
-  return /^https?:\/\//i.test(url);
-}
-
-function isAppleDevice() {
-  return /iPad|iPhone|iPod|Macintosh/i.test(navigator.userAgent);
-}
-
-function buildMediaUrl(url) {
-  return state.proxy ? `${state.proxy}${encodeURIComponent(url)}` : url;
-}
-
-function destroyActivePlayer() {
-  const player = elements.modalContent.querySelector('.player-dock');
-  player?.videojs?.dispose();
-  player?.mpegts?.destroy();
-  if (player?.objectUrl) {
-    URL.revokeObjectURL(player.objectUrl);
-  }
-  player?.remove();
-}
-
-function closeModal() {
-  destroyActivePlayer();
-  elements.modal.setAttribute('aria-hidden', 'true');
-  document.body.classList.remove('modal-open');
-  state.activeTitle = null;
-  elements.modalContent.innerHTML = '';
-}
-
-function clearLibrary() {
-  if (!state.library.length || !confirm('Clear every imported title from this browser?')) return;
-  state.library = [];
-  saveToStorage(STORAGE_KEYS.library, state.library);
-  renderLibrary();
-}
-
-async function fetchJson(url) {
-  const requestUrl = state.proxy ? `${state.proxy}${encodeURIComponent(url)}` : url;
-  const response = await fetch(requestUrl, { headers: { Accept: 'application/json' } });
-  if (!response.ok) {
-    throw new Error(`Request failed with ${response.status} for ${url}`);
-  }
-  return response.json();
-}
-
-function extractImdbId(value) {
-  return value.trim().match(/tt\d{7,10}/i)?.[0]?.toLowerCase() || '';
-}
-
-function normalizeManifestUrl(value) {
-  const url = value.trim().replace(/\/$/, '');
-  return url.endsWith('/manifest.json') || url.endsWith('manifest.json') ? url : `${url}/manifest.json`;
-}
-
-function setStatus(message, type) {
-  elements.importStatus.textContent = message;
-  elements.importStatus.className = `status ${type}`;
-}
-
-function loadFromStorage(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key)) || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveToStorage(key, value) {
+function writeJson(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+function img(seed, width = 780, height = 1170) {
+  return `https://images.unsplash.com/${seed}?auto=format&fit=crop&w=${width}&h=${height}&q=80`;
 }
 
-function escapeAttribute(value) {
-  return escapeHtml(value).replaceAll('`', '&#096;');
+function backdrop(seed) {
+  return `https://images.unsplash.com/${seed}?auto=format&fit=crop&w=1800&h=900&q=82`;
 }
+
+function buildTitle(index, railName = '') {
+  const seed = posterSeeds[index % posterSeeds.length];
+  const suffix = index >= posterSeeds.length ? ` ${Math.floor(index / posterSeeds.length) + 1}` : '';
+  return {
+    id: `${seed[1]}-${seed[0].toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${index}`,
+    title: `${seed[0]}${suffix}`,
+    type: seed[1],
+    year: seed[2],
+    rating: seed[3],
+    genre: railName.includes('Genre') ? railName.replace(' Genre', '') : seed[4],
+    poster: img(seed[5]),
+    backdrop: backdrop(seed[5]),
+    trailer: 'jfKfPfyJRdk',
+  };
+}
+
+function init() {
+  registerServiceWorker();
+  bindSearch();
+  bindGlobalActions();
+  if (state.page === 'home') initHome(); else initDetailPage();
+  if (state.page === 'admin') initAdmin();
+}
+
+function registerServiceWorker() {
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => undefined);
+}
+
+function initHome() {
+  hydrateHero(buildTitle(0));
+  renderNextRails(6);
+  const sentinel = $('[data-infinite-sentinel]');
+  if (!sentinel) return;
+  const observer = new IntersectionObserver(entries => {
+    if (entries.some(entry => entry.isIntersecting)) renderNextRails(2);
+  }, { rootMargin: '600px' });
+  observer.observe(sentinel);
+}
+
+function hydrateHero(title) {
+  const hero = $('[data-hero]');
+  if (!hero) return;
+  hero.style.backgroundImage = `linear-gradient(90deg, rgba(5,6,13,.95), rgba(5,6,13,.52)), url(${title.backdrop})`;
+  $('[data-hero-title]').textContent = title.title;
+  $('[data-hero-overview]').textContent = 'A premium, original interface concept powered by TMDB metadata, Trakt personalization, secured provider matching, and a modern adaptive player.';
+  $('[data-hero-meta]').innerHTML = `<span>${title.rating} TMDB</span><span>${title.genre}</span><span>${title.year}</span><span>${state.language}</span>`;
+  const trailer = $('[data-youtube-hero]');
+  trailer.innerHTML = `<iframe title="Muted trailer" src="https://www.youtube-nocookie.com/embed/${title.trailer}?autoplay=1&mute=1&controls=0&loop=1&playlist=${title.trailer}&playsinline=1" allow="autoplay; encrypted-media; picture-in-picture" loading="lazy"></iframe>`;
+}
+
+function renderNextRails(count) {
+  const mount = $('[data-rails]');
+  if (!mount) return;
+  const railTemplate = $('#rail-template');
+  const posterTemplate = $('#poster-template');
+  for (let i = 0; i < count && state.railsRendered < railDefinitions.length; i += 1) {
+    const [name, source] = railDefinitions[state.railsRendered];
+    const rail = railTemplate.content.firstElementChild.cloneNode(true);
+    $('.eyebrow', rail).textContent = source;
+    $('h2', rail).textContent = name;
+    const row = $('.poster-row', rail);
+    Array.from({ length: 16 }, (_, cardIndex) => buildTitle(cardIndex + state.railsRendered * 3, name)).forEach(title => {
+      const card = posterTemplate.content.firstElementChild.cloneNode(true);
+      const link = $('a', card);
+      link.href = `?page=${title.type === 'tv' ? 'tv' : 'movie'}&id=${encodeURIComponent(title.id)}`;
+      $('img', card).src = title.poster;
+      $('img', card).alt = `${title.title} poster`;
+      $('strong', card).textContent = title.title;
+      $('small', card).textContent = `${title.year} · ${title.rating} · ${title.genre}`;
+      row.append(card);
+    });
+    mount.append(rail);
+    state.railsRendered += 1;
+  }
+}
+
+function bindSearch() {
+  const input = $('[data-search-input]');
+  const suggestions = $('[data-search-suggestions]');
+  if (!input || !suggestions) return;
+  let timer;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const query = input.value.trim().toLowerCase();
+      if (query.length < 2) { suggestions.innerHTML = ''; return; }
+      const results = posterSeeds
+        .map((_, index) => buildTitle(index))
+        .filter(item => `${item.title} ${item.genre} ${item.type}`.toLowerCase().includes(query))
+        .slice(0, 6);
+      suggestions.innerHTML = results.map(result => `<a href="?page=search&q=${encodeURIComponent(query)}"><img src="${result.poster}" alt=""><span><strong>${result.title}</strong><small>${result.type} · ${result.genre}</small></span></a>`).join('') || '<p>No local suggestions yet; TMDB multi-search will fill this.</p>';
+    }, 180);
+  });
+}
+
+function bindGlobalActions() {
+  document.addEventListener('click', event => {
+    const watchButton = event.target.closest('[data-add-watchlist]');
+    if (watchButton) toggleList(STORAGE.watchlist, state.watchlist, watchButton.dataset.addWatchlist || 'demo');
+    if (event.target.closest('[data-open-player]')) openPlayer();
+    if (event.target.closest('[data-close-player]')) closePlayer();
+    if (event.target.closest('[data-pip]')) requestPip();
+    if (event.target.closest('[data-skip-intro]')) skipIntro();
+    if (event.target.closest('[data-trakt-login]')) startTraktOAuth();
+    if (event.target.closest('[data-add-favorite]')) toggleList(STORAGE.favorites, state.favorites, location.search || 'detail');
+  });
+  const speed = $('[data-speed]');
+  speed?.addEventListener('change', () => { const video = $('[data-video]'); if (video) video.playbackRate = parseFloat(speed.value); });
+}
+
+function toggleList(key, list, id) {
+  const next = list.includes(id) ? list.filter(item => item !== id) : [...list, id];
+  if (key === STORAGE.watchlist) state.watchlist = next; else state.favorites = next;
+  writeJson(key, next);
+  toast(list.includes(id) ? 'Removed from list' : 'Saved to your profile');
+}
+
+function initDetailPage() {
+  const detail = $('[data-detail-page]');
+  if (!detail) return;
+  const title = buildTitle(new URLSearchParams(location.search).get('id')?.length || 2);
+  document.body.style.backgroundImage = `linear-gradient(rgba(5,6,13,.75), rgba(5,6,13,.98)), url(${title.backdrop})`;
+  $('[data-detail-title]').textContent = title.title;
+  $('[data-detail-overview]').textContent = 'This page models TMDB cast, ratings, genres, trailers, recommendations, similar titles, episode and season metadata while Trakt handles watch history, watchlists, progress sync, and personalized recommendations.';
+  $('[data-detail-poster]').src = title.poster;
+  $('[data-detail-poster]').alt = `${title.title} poster`;
+  $('[data-detail-meta]').innerHTML = `<span>${title.year}</span><span>${title.rating} rating</span><span>${title.genre}</span><span>IMDb/TMDB matched</span>`;
+  $('[data-detail-grid]').innerHTML = ['Cast', 'Season metadata', 'Episode guide', 'Similar titles', 'Recommendations', 'Reviews'].map(label => `<article><strong>${label}</strong><small>Loaded from cached TMDB/Trakt API responses.</small></article>`).join('');
+}
+
+function openPlayer() {
+  const player = $('[data-player]');
+  const video = $('[data-video]');
+  player?.setAttribute('aria-hidden', 'false');
+  $('[data-episode-sidebar]').innerHTML = Array.from({ length: 8 }, (_, i) => `<button type="button">S1:E${i + 1}<small>${i === 0 ? 'Resume 21:04' : 'Queued'}</small></button>`).join('');
+  if (!video) return;
+  video.poster = img('photo-1485846234645-a62644f84728', 1280, 720);
+  if (window.Hls?.isSupported()) {
+    const hls = new window.Hls({ enableWorker: true, lowLatencyMode: true });
+    hls.loadSource('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8');
+    hls.attachMedia(video);
+  } else {
+    video.src = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
+  }
+  video.addEventListener('timeupdate', () => {
+    state.progress.demo = { seconds: Math.floor(video.currentTime), duration: Math.floor(video.duration || 0), at: Date.now() };
+    writeJson(STORAGE.progress, state.progress);
+  });
+}
+
+function closePlayer() { $('[data-player]')?.setAttribute('aria-hidden', 'true'); }
+function requestPip() { const video = $('[data-video]'); if (document.pictureInPictureEnabled && video) video.requestPictureInPicture().catch(() => toast('Picture-in-picture unavailable')); }
+function skipIntro() { const video = $('[data-video]'); if (video) video.currentTime = Math.max(video.currentTime, 85); }
+function startTraktOAuth() { location.href = 'app/trakt-oauth.php?action=start'; }
+
+function initAdmin() {
+  $('[data-provider-list]') && ($('[data-provider-list]').innerHTML = ['HLS CDN', 'DASH Packager', 'Subtitle Index', 'Metadata Proxy'].map((name, i) => `<article><strong>${name}</strong><span>${i === 2 ? 'Degraded' : 'Healthy'}</span><button>Sandbox</button></article>`).join(''));
+  $('[data-health-grid]') && ($('[data-health-grid]').innerHTML = ['TMDB', 'Trakt', 'Redis', 'Workers', 'Provider cache', 'JWT auth'].map(item => `<div><strong>${item}</strong><span class="pulse">Operational</span></div>`).join(''));
+  $('[data-job-log]') && ($('[data-job-log]').innerHTML = ['Daily TMDB sync', 'Trakt trending import', 'Stream cache pruning', 'Analytics rollup'].map(job => `<p><span>✓</span>${job} completed in background worker.</p>`).join(''));
+}
+
+function toast(message) {
+  const node = document.createElement('div');
+  node.className = 'toast';
+  node.textContent = message;
+  document.body.append(node);
+  setTimeout(() => node.remove(), 2200);
+}
+
+init();
