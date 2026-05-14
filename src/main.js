@@ -443,7 +443,7 @@ function playInModal(url) {
       </div>
       <button type="button" data-close-player aria-label="Close player">×</button>
     </div>
-    <video controls autoplay playsinline></video>
+    <video class="video-js vjs-big-play-centered vjs-fluid" controls autoplay playsinline preload="auto"></video>
     <div class="player-actions">
       ${isHttpUrl(url) ? `<a class="secondary button-link" href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">Open stream</a>` : ''}
       <button class="secondary" type="button" data-copy-stream="${escapeAttribute(url)}">Copy link</button>
@@ -464,6 +464,7 @@ function playInModal(url) {
     handleVideoPlaybackError({ player, video, status, url });
   });
 
+  player.originalUrl = url;
   elements.modalContent.prepend(player);
   configurePlayerSource({ player, video, status, url }).catch(() => {
     setPlayerError(status, 'The embedded browser player could not load this stream. Use Open stream or Copy link to try another player.');
@@ -477,13 +478,8 @@ async function configurePlayerSource({ player, video, status, url }) {
   setPlayerStatus(status, `Starting ${getFormatLabel(format)} stream…`);
 
   if (format === 'hls' || format === 'dash') {
-    const loadedWithShaka = await loadWithShaka({ player, video, status, url: playbackUrl });
-    if (loadedWithShaka) return;
-
-    if (format === 'hls' && video.canPlayType('application/vnd.apple.mpegurl')) {
-      await loadNativeVideo({ video, status, url: playbackUrl });
-      return;
-    }
+    const loadedWithVideoJs = await loadWithVideoJs({ player, video, status, url: playbackUrl, format });
+    if (loadedWithVideoJs) return;
 
     setPlayerError(status, 'Adaptive playback is not available in this browser. Use Open stream or Copy link to try another player.');
     return;
@@ -500,29 +496,39 @@ async function configurePlayerSource({ player, video, status, url }) {
     if (loadedWithFfmpeg) return;
   }
 
+  const loadedWithVideoJs = await loadWithVideoJs({ player, video, status, url: playbackUrl, format });
+  if (loadedWithVideoJs) return;
+
   await loadNativeVideo({ video, status, url: playbackUrl });
 }
 
-async function loadWithShaka({ player, video, status, url }) {
-  if (!window.shaka?.Player) return false;
-
-  window.shaka.polyfill.installAll();
-  if (!window.shaka.Player.isBrowserSupported()) return false;
-
-  const shakaPlayer = new window.shaka.Player();
-  player.shaka = shakaPlayer;
-  shakaPlayer.addEventListener('error', () => {
-    setPlayerError(status, 'The adaptive stream failed to load. Use Open stream or Copy link to try another player.');
-  });
+async function loadWithVideoJs({ player, video, status, url, format }) {
+  if (!window.videojs) return false;
 
   try {
-    await shakaPlayer.attach(video);
-    await shakaPlayer.load(url);
-    await startPlayback(video, status);
+    const videoJsPlayer = window.videojs(video, {
+      autoplay: true,
+      controls: true,
+      fluid: true,
+      preload: 'auto',
+      responsive: true,
+      html5: {
+        vhs: {
+          enableLowInitialPlaylist: true,
+          overrideNative: !isAppleDevice(),
+        },
+      },
+    });
+    player.videojs = videoJsPlayer;
+    videoJsPlayer.on('error', () => {
+      handleVideoPlaybackError({ player, video, status, url: player.originalUrl || url });
+    });
+    videoJsPlayer.src({ src: url, type: getMimeType(format) });
+    await startVideoJsPlayback(videoJsPlayer, status);
     return true;
   } catch (error) {
-    await shakaPlayer.destroy();
-    player.shaka = null;
+    player.videojs?.dispose();
+    player.videojs = null;
     return false;
   }
 }
@@ -538,7 +544,7 @@ async function loadWithMpegts({ player, video, status, url, format }) {
     });
     player.mpegts = mpegtsPlayer;
     mpegtsPlayer.on(window.mpegts.Events.ERROR, () => {
-      setPlayerError(status, 'The MPEG transport stream failed to load. Use Open stream or Copy link to try another player.');
+      handleVideoPlaybackError({ player, video, status, url: player.originalUrl || url });
     });
     mpegtsPlayer.attachMediaElement(video);
     mpegtsPlayer.load();
@@ -572,7 +578,14 @@ async function loadWithFfmpeg({ player, video, status, url, format }) {
     player.objectUrl = objectUrl;
     safeUnlink(ffmpeg, inputName);
     safeUnlink(ffmpeg, outputName);
-    await loadNativeVideo({ video, status, url: objectUrl });
+
+    if (player.videojs && !player.videojs.isDisposed()) {
+      player.videojs.src({ src: objectUrl, type: 'video/mp4' });
+      await startVideoJsPlayback(player.videojs, status);
+    } else {
+      await loadNativeVideo({ video, status, url: objectUrl });
+    }
+
     return true;
   } catch (error) {
     return false;
@@ -631,6 +644,14 @@ async function startPlayback(video, status) {
   }
 }
 
+async function startVideoJsPlayback(videoJsPlayer, status) {
+  try {
+    await videoJsPlayer.play();
+  } catch (error) {
+    setPlayerStatus(status, 'Click the Video.js play control to start this stream.');
+  }
+}
+
 function detectStreamFormat(url) {
   const path = getUrlPath(url);
   if (path.endsWith('.m3u8')) return 'hls';
@@ -685,6 +706,28 @@ function getFormatLabel(format) {
 
 function getMpegtsType(format) {
   return format === 'm2ts' ? 'm2ts' : format;
+}
+
+function getMimeType(format) {
+  const types = {
+    '3gp': 'video/3gpp',
+    asf: 'video/x-ms-asf',
+    avi: 'video/x-msvideo',
+    dash: 'application/dash+xml',
+    flv: 'video/x-flv',
+    hls: 'application/x-mpegURL',
+    m2ts: 'video/mp2t',
+    m4v: 'video/x-m4v',
+    mkv: 'video/x-matroska',
+    mov: 'video/quicktime',
+    mp4: 'video/mp4',
+    mpeg: 'video/mpeg',
+    mpegts: 'video/mp2t',
+    ogg: 'video/ogg',
+    webm: 'video/webm',
+    wmv: 'video/x-ms-wmv',
+  };
+  return types[format] || 'video/mp4';
 }
 
 function getInputExtension(format) {
@@ -748,13 +791,17 @@ function isHttpUrl(url) {
   return /^https?:\/\//i.test(url);
 }
 
+function isAppleDevice() {
+  return /iPad|iPhone|iPod|Macintosh/i.test(navigator.userAgent);
+}
+
 function buildMediaUrl(url) {
   return state.proxy ? `${state.proxy}${encodeURIComponent(url)}` : url;
 }
 
 function destroyActivePlayer() {
   const player = elements.modalContent.querySelector('.player-dock');
-  player?.shaka?.destroy();
+  player?.videojs?.dispose();
   player?.mpegts?.destroy();
   if (player?.objectUrl) {
     URL.revokeObjectURL(player.objectUrl);

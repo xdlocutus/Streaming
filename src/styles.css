@@ -201,7 +201,7 @@ button, .secondary {
 .player-dock { padding: 1rem; border-bottom: 1px solid var(--line); background: #020617; }
 .player-header { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; }
 .player-status { margin: 0; color: var(--muted); }
-.player-dock video { display: block; width: 100%; max-height: 50vh; border-radius: 1rem; background: black; }
+.player-dock video, .player-dock .video-js { display: block; width: 100%; max-height: 50vh; border-radius: 1rem; background: black; }
 .player-dock [data-close-player] { width: 2.5rem; min-height: 2.5rem; padding: 0; }
 .player-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
 
