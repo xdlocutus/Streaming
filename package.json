@@ -1,18 +1,18 @@
 {
-  "name": "stremio-imdb-streaming-site",
-  "version": "0.1.0",
+  "name": "astrastream-php-site",
+  "version": "1.0.0",
   "private": true,
-  "description": "A browser streaming library that imports IMDb titles and queries Stremio-compatible addons for streams.",
-  "type": "module",
+  "description": "PHP, HTML, CSS, and vanilla JavaScript cinematic streaming dashboard prototype.",
   "scripts": {
-    "start": "python3 -m http.server 5173",
-    "test": "node --check src/main.js"
+    "start": "php -S 127.0.0.1:8000",
+    "test": "php -l index.php && php -l app/services.php && php -l app/api.php && php -l app/trakt-oauth.php && php -l app/daily-sync.php"
   },
   "keywords": [
-    "stremio",
-    "imdb",
+    "php",
+    "tmdb",
+    "trakt",
     "streaming",
-    "addons"
+    "pwa"
   ],
   "license": "UNLICENSED"
 }

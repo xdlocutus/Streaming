@@ -1,0 +1,166 @@
+// Reference Prisma schema for teams that choose a Prisma-compatible service layer later.
+// The AstraStream runtime in this repository is PHP + HTML + CSS + vanilla JavaScript.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String             @id @default(cuid())
+  email            String             @unique
+  displayName      String
+  passwordHash     String?
+  traktId          String?            @unique
+  preferredLocale  String             @default("en-US")
+  guest            Boolean            @default(false)
+  profiles         Profile[]
+  watchHistory     WatchHistory[]
+  watchlists       Watchlist[]
+  favorites        Favorite[]
+  playbackProgress PlaybackProgress[]
+  ratings          Rating[]
+  reviews          Review[]
+  notifications    Notification[]
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  avatarUrl String?
+  kidsMode  Boolean  @default(false)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+
+model WatchHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  tmdbId      Int?
+  imdbId      String?
+  mediaType   String
+  season      Int?
+  episode     Int?
+  watchedAt   DateTime @default(now())
+  durationSec Int?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, watchedAt])
+  @@index([tmdbId, imdbId])
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String
+  tmdbId    Int?
+  imdbId    String?
+  mediaType String
+  title     String
+  addedAt   DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, mediaType, tmdbId, imdbId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  tmdbId    Int?
+  imdbId    String?
+  mediaType String
+  title     String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([userId, mediaType, tmdbId, imdbId])
+}
+
+model Provider {
+  id              String         @id @default(cuid())
+  name            String
+  baseUrl         String
+  enabled         Boolean        @default(true)
+  sandboxed       Boolean        @default(true)
+  priority        Int            @default(100)
+  healthStatus    String         @default("unknown")
+  lastHealthCheck DateTime?
+  cachedStreams   CachedStream[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model CachedStream {
+  id          String   @id @default(cuid())
+  providerId  String
+  tmdbId      Int?
+  imdbId      String?
+  mediaType   String
+  season      Int?
+  episode     Int?
+  normalized  String
+  quality     String?
+  urlHash     String
+  payload     Json
+  expiresAt   DateTime
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  @@index([mediaType, tmdbId, imdbId, season, episode])
+  @@index([expiresAt])
+}
+
+model PlaybackProgress {
+  id          String   @id @default(cuid())
+  userId      String
+  tmdbId      Int?
+  imdbId      String?
+  mediaType   String
+  season      Int?
+  episode     Int?
+  positionSec Int
+  durationSec Int
+  finished    Boolean  @default(false)
+  syncedTrakt Boolean  @default(false)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt   DateTime @updatedAt
+  @@unique([userId, mediaType, tmdbId, imdbId, season, episode])
+}
+
+model Rating {
+  id        String   @id @default(cuid())
+  userId    String
+  tmdbId    Int?
+  imdbId    String?
+  mediaType String
+  value     Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([userId, mediaType, tmdbId, imdbId])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  tmdbId    Int?
+  imdbId    String?
+  mediaType String
+  body      String
+  spoilers  Boolean  @default(false)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  readAt    DateTime?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
