@@ -5,7 +5,7 @@
   "description": "PHP, HTML, CSS, and vanilla JavaScript cinematic streaming dashboard prototype.",
   "scripts": {
     "start": "php -S 127.0.0.1:8000",
-    "test": "php -l index.php && php -l app/services.php && php -l app/api.php && php -l app/trakt-oauth.php && php -l app/daily-sync.php"
+    "test": "php -l index.php && php -l app/services.php && php -l app/api.php && php -l app/trakt-oauth.php && php -l app/daily-sync.php && node --check src/main.js"
   },
   "keywords": [
     "php",

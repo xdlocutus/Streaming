@@ -8,6 +8,9 @@ const STORAGE = {
 const railDefinitions = [
   ['Trending Movies', 'tmdb-trending', { type: 'movie' }],
   ['Trending TV Shows', 'tmdb-trending', { type: 'tv' }],
+  ['Top Rated Movies', 'tmdb-discover', { type: 'movie', sort_by: 'vote_average.desc' }],
+  ['Recently Released', 'tmdb-discover', { type: 'movie', sort_by: 'primary_release_date.desc' }],
+  ['Popular Series', 'tmdb-discover', { type: 'tv', sort_by: 'popularity.desc' }],
   ['Popular on Trakt Movies', 'trakt-trending', { type: 'movies' }],
   ['Popular on Trakt Shows', 'trakt-trending', { type: 'shows' }],
 ];
@@ -153,7 +156,7 @@ async function renderNextRails(count) {
 }
 
 function normalizeRailResults(data, action, type) {
-  if (action === 'tmdb-trending') return (data.results || []).filter(item => item.id).map(item => mapTmdbTitle(item, type)).filter(item => item.id);
+  if (action === 'tmdb-trending' || action === 'tmdb-discover') return (data.results || []).filter(item => item.id).map(item => mapTmdbTitle(item, type)).filter(item => item.id);
   if (action === 'trakt-trending') return Array.isArray(data) ? data.map(item => mapTraktTitle(item, type === 'shows' ? 'tv' : 'movie')).filter(item => item.id) : [];
   return [];
 }
@@ -162,9 +165,22 @@ function bindSearch() {
   const input = $('[data-search-input]');
   const suggestions = $('[data-search-suggestions]');
   if (!input || !suggestions) return;
+  let timer;
   input.addEventListener('input', () => {
+    clearTimeout(timer);
     const query = input.value.trim();
-    suggestions.innerHTML = query.length < 2 ? '' : '<p>Search connects to TMDB/Trakt metadata only; no local filler catalog is shown.</p>';
+    if (query.length < 2) { suggestions.innerHTML = ''; return; }
+    suggestions.innerHTML = '<p>Searching TMDB...</p>';
+    timer = setTimeout(async () => {
+      const data = await api('tmdb-search', { query, language: state.language });
+      const results = (data.results || []).filter(item => ['movie', 'tv', 'person'].includes(item.media_type)).slice(0, 8);
+      suggestions.innerHTML = results.length ? results.map(item => {
+        const title = item.title || item.name || 'Untitled';
+        const type = item.media_type === 'tv' ? 'tv' : item.media_type === 'person' ? 'actor' : 'movie';
+        const image = imageUrl(item.poster_path || item.profile_path, 'w185');
+        return `<a href="?page=${type}&id=tmdb:${item.id}&tmdb=${item.id}&title=${encodeURIComponent(title)}"><span>${image ? `<img src="${image}" alt="" loading="lazy" />` : ''}</span><strong>${escapeHtml(title)}<small>${escapeHtml(item.media_type)} · ${(item.release_date || item.first_air_date || '').slice(0, 4)}</small></strong></a>`;
+      }).join('') : '<p>No TMDB results found.</p>';
+    }, 220);
   });
 }
 
@@ -177,6 +193,8 @@ function bindGlobalActions() {
     if (event.target.closest('[data-pip]')) requestPip();
     if (event.target.closest('[data-skip-intro]')) skipIntro();
     if (event.target.closest('[data-trakt-login]')) startTraktOAuth();
+    const streamChoice = event.target.closest('[data-stream-index]');
+    if (streamChoice) loadStreamIntoPlayer(Number(streamChoice.dataset.streamIndex));
     if (event.target.closest('[data-add-favorite]')) toggleList(STORAGE.favorites, state.favorites, currentContentId());
     if (event.target.closest('[data-refresh-streams]')) loadStreams();
     const external = event.target.closest('[data-external-stream]');
@@ -198,30 +216,47 @@ function currentContentId() {
   return params.get('id') || (params.get('tmdb') ? `tmdb:${params.get('tmdb')}` : '');
 }
 
-function initDetailPage() {
+async function initDetailPage() {
   const detail = $('[data-detail-page]');
   if (!detail) return;
   const params = new URLSearchParams(location.search);
   const id = currentContentId();
-  const title = params.get('title') || id || 'Select a TMDB, IMDb, or Trakt title';
-  state.currentTitle = { id, title, stremioType: state.page === 'tv' || state.page === 'episode' ? 'series' : 'movie' };
-  $('[data-detail-title]').textContent = title;
-  $('[data-detail-overview]').textContent = 'This detail page avoids seeded or empty catalog data. Add TMDB/IMDb/Trakt identifiers to query enabled Stremio stream providers.';
-  $('[data-detail-meta]').innerHTML = `<span>${id || 'No stream ID'}</span><span>IMDb/TMDB/Trakt only</span><span>Stremio compatible</span>`;
-  $('[data-detail-grid]').innerHTML = ['TMDB metadata', 'IMDb identifiers', 'Trakt personalization'].map(label => `<article><strong>${label}</strong><small>Loaded only when configured API credentials or IDs are available.</small></article>`).join('');
+  const tmdbId = params.get('tmdb') || (id.startsWith('tmdb:') ? id.slice(5) : '');
+  const fallbackTitle = params.get('title') || id || 'Select a TMDB, IMDb, or Trakt title';
+  state.currentTitle = { id, title: fallbackTitle, tmdbId, stremioType: state.page === 'tv' || state.page === 'episode' ? 'series' : 'movie' };
+  $('[data-detail-title]').textContent = fallbackTitle;
+  $('[data-detail-overview]').textContent = 'Loading normalized metadata, external IDs, streams, and recommendations...';
+  if (tmdbId && ['movie', 'tv'].includes(state.page)) {
+    const data = await api('tmdb-details', { type: state.page, id: tmdbId, language: state.language });
+    if (!data.error && !data.notice) hydrateDetail(data, state.page);
+  }
+  $('[data-detail-meta]').innerHTML ||= `<span>${id || 'No stream ID'}</span><span>IMDb/TMDB/Trakt only</span><span>Stremio compatible</span>`;
   loadStreams();
+}
+
+function hydrateDetail(data, type) {
+  const title = data.title || data.name || state.currentTitle?.title || 'Untitled';
+  const imdb = data.external_ids?.imdb_id || state.currentTitle?.id || '';
+  state.currentTitle = { ...state.currentTitle, title, imdbId: imdb, id: imdb || state.currentTitle?.id, stremioType: type === 'tv' ? 'series' : 'movie' };
+  $('[data-detail-title]').textContent = title;
+  $('[data-detail-overview]').textContent = data.overview || 'No overview is available from TMDB.';
+  $('[data-detail-poster]').src = imageUrl(data.poster_path);
+  $('[data-detail-meta]').innerHTML = `<span>${(data.release_date || data.first_air_date || '').slice(0, 4) || 'Unreleased'}</span><span>${(data.vote_average || 0).toFixed(1)} TMDB</span><span>${imdb || 'No IMDb ID'}</span>`;
+  const credits = (data.credits?.cast || []).slice(0, 6).map(person => `<article><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(person.character || person.known_for_department || 'Cast')}</small></article>`).join('');
+  const recs = (data.recommendations?.results || []).slice(0, 4).map(item => `<article><strong>${escapeHtml(item.title || item.name)}</strong><small>Recommendation</small></article>`).join('');
+  $('[data-detail-grid]').innerHTML = credits + recs || '<p class="empty-state">No credits or recommendations returned.</p>';
 }
 
 async function loadStreams() {
   const list = $('[data-stream-list]');
   if (!list) return;
-  const id = currentContentId();
+  const id = state.currentTitle?.imdbId || currentContentId();
   if (!id) {
     list.innerHTML = '<p class="empty-state">No IMDb, TMDB, or Trakt ID is available for this title.</p>';
     return;
   }
   list.innerHTML = '<p class="empty-state">Querying enabled Stremio addons...</p>';
-  const data = await api('streams', { type: state.currentTitle?.stremioType || 'movie', id });
+  const data = await api('streams', { type: state.currentTitle?.stremioType || 'movie', id, title: state.currentTitle?.title || '' });
   state.currentStreams = data.streams || [];
   renderStreams();
 }
@@ -247,14 +282,35 @@ function openPlayer() {
   const player = $('[data-player]');
   const video = $('[data-video]');
   player?.setAttribute('aria-hidden', 'false');
-  $('[data-episode-sidebar]').innerHTML = state.currentStreams.map(stream => `<button type="button"><span>${escapeHtml(stream.quality)}</span><small>${escapeHtml(stream.provider)} · ${stream.seeds ?? 'n/a'} seeds</small></button>`).join('') || '<p class="empty-state">No stream selected.</p>';
-  const stream = state.currentStreams.find(item => item.url) || null;
+  $('[data-player-title]').textContent = state.currentTitle?.title || 'Adaptive Player';
+  $('[data-episode-sidebar]').innerHTML = state.currentStreams.map((stream, index) => `<button type="button" data-stream-index="${index}"><span>${escapeHtml(stream.quality)} · ${escapeHtml(stream.codec || '')}</span><small>${escapeHtml(stream.provider)} · ${stream.seeds ?? 'n/a'} seeds</small></button>`).join('') || '<p class="empty-state">No stream selected.</p>';
+  loadStreamIntoPlayer(state.currentStreams.findIndex(item => item.url));
+}
+
+function loadStreamIntoPlayer(index) {
+  const video = $('[data-video]');
+  const stream = state.currentStreams[index] || null;
   if (!video || !stream?.url) return;
   video.poster = '';
+  video.src = '';
+  video.onloadedmetadata = () => {
+    const saved = state.progress[currentContentId()];
+    if (saved && saved < video.duration - 20) video.currentTime = saved;
+  };
+  video.ontimeupdate = () => {
+    if (!video.duration) return;
+    state.progress[currentContentId()] = Math.floor(video.currentTime);
+    writeJson(STORAGE.progress, state.progress);
+  };
+  video.onerror = () => {
+    const next = state.currentStreams.findIndex((item, nextIndex) => nextIndex > index && item.url);
+    if (next > -1) { toast('Stream failed; switching provider'); loadStreamIntoPlayer(next); }
+  };
   if (stream.url.includes('.m3u8') && window.Hls?.isSupported()) {
     const hls = new window.Hls({ enableWorker: true, lowLatencyMode: true });
     hls.loadSource(stream.url);
     hls.attachMedia(video);
+    hls.on(window.Hls.Events.ERROR, (_, data) => { if (data.fatal) hls.recoverMediaError(); });
   } else if (stream.url.includes('.mpd') && window.dashjs) {
     window.dashjs.MediaPlayer().create().initialize(video, stream.url, false);
   } else {
