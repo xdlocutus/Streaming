@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StreamBridge</title>
+    <link rel="preconnect" href="https://v3-cinemeta.strem.io" />
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <nav class="topbar" aria-label="Primary">
+          <a class="brand" href="#" aria-label="StreamBridge home">
+            <span class="brand-mark">▶</span>
+            <span>StreamBridge</span>
+          </a>
+          <div class="topbar-actions">
+            <a href="#addons" class="ghost-link">Addons</a>
+            <a href="#library" class="ghost-link">Library</a>
+          </div>
+        </nav>
+
+        <section class="hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow">IMDb in · Stremio addons out</p>
+            <h1>Build a personal movie and series hub from IMDb titles.</h1>
+            <p class="lede">
+              Import any IMDb movie or show, save it to your library, then query your
+              Stremio-compatible addons for streams and torrent sources when you open it.
+            </p>
+
+            <form id="import-form" class="import-form" autocomplete="off">
+              <label for="imdb-input" class="sr-only">IMDb URL or ID</label>
+              <input
+                id="imdb-input"
+                name="imdb"
+                type="text"
+                inputmode="url"
+                placeholder="Paste IMDb URL or tt ID, e.g. tt0133093"
+                required
+              />
+              <select id="type-select" name="type" aria-label="Title type">
+                <option value="auto">Auto</option>
+                <option value="movie">Movie</option>
+                <option value="series">Series</option>
+              </select>
+              <button type="submit">Import</button>
+            </form>
+            <p id="import-status" class="status" role="status"></p>
+          </div>
+
+          <aside class="hero-card" aria-label="How it works">
+            <div class="flow-step">
+              <span>1</span>
+              <p>Paste an IMDb URL or title id.</p>
+            </div>
+            <div class="flow-step">
+              <span>2</span>
+              <p>Metadata is resolved through Stremio Cinemeta.</p>
+            </div>
+            <div class="flow-step">
+              <span>3</span>
+              <p>Your configured addons are queried for playable streams.</p>
+            </div>
+          </aside>
+        </section>
+      </header>
+
+      <main>
+        <section id="addons" class="panel two-column">
+          <div>
+            <p class="eyebrow">Stremio addons</p>
+            <h2>Connect plugin manifests</h2>
+            <p>
+              Add any Stremio addon manifest URL. The app stores manifests locally and calls
+              each addon's <code>/stream/{type}/{imdbId}.json</code> endpoint when you open a title.
+            </p>
+            <form id="addon-form" class="addon-form" autocomplete="off">
+              <label for="addon-url">Addon manifest URL</label>
+              <div class="inline-form">
+                <input id="addon-url" name="addonUrl" type="url" placeholder="https://example.strem.io/manifest.json" required />
+                <button type="submit">Add addon</button>
+              </div>
+            </form>
+            <details class="settings">
+              <summary>Network settings</summary>
+              <label for="proxy-url">Optional CORS proxy prefix</label>
+              <input id="proxy-url" type="url" placeholder="https://your-proxy.example/fetch?url=" />
+              <small>Leave blank for direct addon calls. Addons must allow browser CORS unless you use a proxy.</small>
+            </details>
+          </div>
+          <div>
+            <h3>Installed addons</h3>
+            <div id="addon-list" class="addon-list"></div>
+          </div>
+        </section>
+
+        <section id="library" class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Library</p>
+              <h2>Your imported IMDb titles</h2>
+            </div>
+            <button id="clear-library" class="secondary" type="button">Clear library</button>
+          </div>
+          <div id="library-grid" class="library-grid" aria-live="polite"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="title-modal" class="modal" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal></div>
+      <article class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
+        <div id="modal-content"></div>
+      </article>
+    </div>
+
+    <template id="empty-state-template">
+      <div class="empty-state">
+        <span>☆</span>
+        <p>No titles yet. Import an IMDb movie or series to get started.</p>
+      </div>
+    </template>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

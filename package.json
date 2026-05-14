@@ -1,0 +1,18 @@
+{
+  "name": "stremio-imdb-streaming-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A browser streaming library that imports IMDb titles and queries Stremio-compatible addons for streams.",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 5173",
+    "test": "node --check src/main.js"
+  },
+  "keywords": [
+    "stremio",
+    "imdb",
+    "streaming",
+    "addons"
+  ],
+  "license": "UNLICENSED"
+}
